@@ -10,6 +10,7 @@ defineProps<{
   selectedGroup: string
   searchQuery?: string
   availableGroups?: string[]
+  isShared?: (todo: Todo) => boolean
 }>()
 
 const emit = defineEmits<{
@@ -58,6 +59,7 @@ const emit = defineEmits<{
         :key="todo.id"
         :todo="todo"
         :is-pending="activeActionId === todo.id"
+        :is-shared="isShared ? isShared(todo) : false"
         :available-groups="availableGroups"
         @toggle="emit('toggle', $event)"
         @update-title="(id, title) => emit('updateTitle', id, title)"

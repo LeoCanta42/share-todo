@@ -35,10 +35,12 @@ export function getGroupMeta(groupName?: string | null): GroupMeta {
     hash = (hash + normalized.charCodeAt(i)) % palette.length
   }
 
+  const chosen = palette[hash] ?? palette[0]!
+
   return {
     name: normalized,
-    colorClass: palette[hash].colorClass,
-    badgeColor: palette[hash].badgeColor,
+    colorClass: chosen.colorClass,
+    badgeColor: chosen.badgeColor,
     icon: 'i-lucide-tag'
   }
 }

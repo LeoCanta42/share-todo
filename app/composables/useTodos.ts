@@ -1,9 +1,10 @@
 import type { Database } from '~/types/database.types'
-import type { Todo, TodoFilter, TodoStats } from '~/types/todo'
+import type { Todo, TodoFilter, TodoScope, TodoStats } from '~/types/todo'
 import { DEFAULT_GROUPS } from '~/utils/groups'
 
 export function useTodos() {
   const supabase = useSupabaseClient<Database>()
+  const { userId } = useCurrentUser()
   const toast = useToast()
 
   const todos = useState<Todo[]>('todos-list', () => [])
@@ -12,6 +13,7 @@ export function useTodos() {
   const activeActionId = useState<number | null>('todos-active-id', () => null)
 
   const filter = useState<TodoFilter>('todos-filter', () => 'all')
+  const scope = useState<TodoScope>('todos-scope', () => 'all')
   const selectedGroup = useState<string>('todos-selected-group', () => 'all')
   const searchQuery = useState<string>('todos-search', () => '')
 
@@ -41,6 +43,29 @@ export function useTodos() {
     }
   }
 
+  function patch(id: number, changes: Partial<Todo>) {
+    todos.value = todos.value.map(t => (t.id === id ? { ...t, ...changes } : t))
+  }
+
+  function restore(id: number, snapshot: Todo | undefined) {
+    if (snapshot) {
+      todos.value = todos.value.map(t => (t.id === id ? snapshot : t))
+    }
+  }
+
+  /**
+   * Postgres filters out rows a policy forbids instead of raising an error, so an
+   * update/delete that touched nothing is exactly what a read-only share looks like.
+   * Every write below asks for the affected rows back and treats "none" as a refusal.
+   */
+  function notPermitted(action: string) {
+    toast.add({
+      title: 'Modifica non consentita',
+      description: `${action}: l'attività è condivisa in sola lettura oppure non è più accessibile.`,
+      color: 'warning'
+    })
+  }
+
   async function addTodo(rawTitle: string, rawGroup?: string): Promise<boolean> {
     const title = rawTitle.trim()
     if (!title) return false
@@ -49,13 +74,19 @@ export function useTodos() {
 
     isAdding.value = true
     try {
+      const payload: Database['public']['Tables']['todos']['Insert'] = {
+        title,
+        group_name: groupName,
+        completed: false
+      }
+
+      if (userId.value) {
+        payload.user_id = userId.value
+      }
+
       const { data, error } = await supabase
         .from('todos')
-        .insert({
-          title,
-          group_name: groupName,
-          completed: false
-        })
+        .insert(payload)
         .select()
         .single()
 
@@ -89,37 +120,34 @@ export function useTodos() {
   }
 
   async function toggleTodo(todo: Todo) {
+    const snapshot = { ...todo }
     const nextCompleted = !todo.completed
-    const originalCompleted = todo.completed
 
     // Optimistic local update
-    todos.value = todos.value.map(t =>
-      t.id === todo.id ? { ...t, completed: nextCompleted } : t
-    )
+    patch(todo.id, { completed: nextCompleted })
 
     activeActionId.value = todo.id
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('todos')
         .update({ completed: nextCompleted })
         .eq('id', todo.id)
+        .select('id')
 
       if (error) {
-        // Revert on error
-        todos.value = todos.value.map(t =>
-          t.id === todo.id ? { ...t, completed: originalCompleted } : t
-        )
+        restore(todo.id, snapshot)
         toast.add({
           title: 'Errore aggiornamento',
           description: error.message,
           color: 'error'
         })
+      } else if (!data || data.length === 0) {
+        restore(todo.id, snapshot)
+        notPermitted('Spunta non salvata')
       }
     } catch (err: unknown) {
       console.error('Error toggling todo:', err)
-      todos.value = todos.value.map(t =>
-        t.id === todo.id ? { ...t, completed: originalCompleted } : t
-      )
+      restore(todo.id, snapshot)
     } finally {
       activeActionId.value = null
     }
@@ -129,35 +157,38 @@ export function useTodos() {
     const trimmed = newTitle.trim()
     if (!trimmed) return
 
-    const previousTodo = todos.value.find(t => t.id === id)
-    if (!previousTodo || previousTodo.title === trimmed) return
+    const snapshot = todos.value.find(t => t.id === id)
+    if (!snapshot || snapshot.title === trimmed) return
 
-    todos.value = todos.value.map(t =>
-      t.id === id ? { ...t, title: trimmed } : t
-    )
+    patch(id, { title: trimmed })
 
     activeActionId.value = id
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('todos')
         .update({ title: trimmed })
         .eq('id', id)
+        .select('id')
 
       if (error) {
-        todos.value = todos.value.map(t =>
-          t.id === id ? { ...t, title: previousTodo.title } : t
-        )
+        restore(id, snapshot)
         toast.add({
           title: 'Errore modifica',
           description: error.message,
           color: 'error'
         })
+      } else if (!data || data.length === 0) {
+        restore(id, snapshot)
+        notPermitted('Titolo non salvato')
       } else {
         toast.add({
           title: 'Attività modificata',
           color: 'success'
         })
       }
+    } catch (err: unknown) {
+      console.error('Error updating title:', err)
+      restore(id, snapshot)
     } finally {
       activeActionId.value = null
     }
@@ -165,29 +196,29 @@ export function useTodos() {
 
   async function updateTodoGroup(id: number, newGroup: string) {
     const trimmed = newGroup.trim() || 'Generale'
-    const previousTodo = todos.value.find(t => t.id === id)
-    if (!previousTodo || (previousTodo.group_name || 'Generale') === trimmed) return
+    const snapshot = todos.value.find(t => t.id === id)
+    if (!snapshot || (snapshot.group_name || 'Generale') === trimmed) return
 
-    todos.value = todos.value.map(t =>
-      t.id === id ? { ...t, group_name: trimmed } : t
-    )
+    patch(id, { group_name: trimmed })
 
     activeActionId.value = id
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('todos')
         .update({ group_name: trimmed })
         .eq('id', id)
+        .select('id')
 
       if (error) {
-        todos.value = todos.value.map(t =>
-          t.id === id ? { ...t, group_name: previousTodo.group_name } : t
-        )
+        restore(id, snapshot)
         toast.add({
           title: 'Errore spostamento',
           description: error.message,
           color: 'error'
         })
+      } else if (!data || data.length === 0) {
+        restore(id, snapshot)
+        notPermitted('Spostamento non salvato')
       } else {
         toast.add({
           title: 'Gruppo aggiornato',
@@ -195,6 +226,9 @@ export function useTodos() {
           color: 'success'
         })
       }
+    } catch (err: unknown) {
+      console.error('Error updating group:', err)
+      restore(id, snapshot)
     } finally {
       activeActionId.value = null
     }
@@ -202,24 +236,28 @@ export function useTodos() {
 
   async function deleteTodo(id: number) {
     const target = todos.value.find(t => t.id === id)
+    const snapshot = [...todos.value]
     activeActionId.value = id
 
-    const previousList = [...todos.value]
     todos.value = todos.value.filter(t => t.id !== id)
 
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('todos')
         .delete()
         .eq('id', id)
+        .select('id')
 
       if (error) {
-        todos.value = previousList
+        todos.value = snapshot
         toast.add({
           title: 'Errore eliminazione',
           description: error.message,
           color: 'error'
         })
+      } else if (!data || data.length === 0) {
+        todos.value = snapshot
+        notPermitted('Eliminazione non eseguita')
       } else {
         toast.add({
           title: 'Attività eliminata',
@@ -227,6 +265,9 @@ export function useTodos() {
           color: 'neutral'
         })
       }
+    } catch (err: unknown) {
+      todos.value = snapshot
+      console.error('Error deleting todo:', err)
     } finally {
       activeActionId.value = null
     }
@@ -236,33 +277,52 @@ export function useTodos() {
     const completedIds = todos.value.filter(t => t.completed).map(t => t.id)
     if (completedIds.length === 0) return
 
-    const previousList = [...todos.value]
+    const snapshot = [...todos.value]
     todos.value = todos.value.filter(t => !t.completed)
 
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('todos')
         .delete()
         .in('id', completedIds)
+        .select('id')
 
       if (error) {
-        todos.value = previousList
+        todos.value = snapshot
         toast.add({
           title: 'Errore durante la pulizia',
           description: error.message,
           color: 'error'
         })
-      } else {
+        return
+      }
+
+      const removed = data?.length ?? 0
+      if (removed === completedIds.length) {
         toast.add({
           title: 'Completati eliminati',
-          description: `${completedIds.length} attività completate rimosse`,
+          description: `${removed} attività completate rimosse`,
           color: 'neutral'
+        })
+      } else {
+        // Some were read-only shares: resync rather than trust the optimistic list.
+        await loadTodos()
+        toast.add({
+          title: 'Pulizia parziale',
+          description: `${removed} di ${completedIds.length} rimosse: le altre sono condivise in sola lettura.`,
+          color: 'warning'
         })
       }
     } catch (err: unknown) {
-      todos.value = previousList
+      todos.value = snapshot
       console.error('Error clearing completed:', err)
     }
+  }
+
+  function isShared(todo: Todo): boolean {
+    const id = userId.value
+    if (!id) return false
+    return Boolean(todo.user_id && todo.user_id !== id)
   }
 
   const stats = computed<TodoStats>(() => {
@@ -274,12 +334,9 @@ export function useTodos() {
     return { total, active, completed, percentage }
   })
 
-  // List of all active/existing groups dynamically aggregated
   const availableGroups = computed<string[]>(() => {
     const set = new Set<string>()
-    // Include default suggestions
     DEFAULT_GROUPS.forEach(g => set.add(g.name))
-    // Include all groups currently in database
     todos.value.forEach(t => {
       if (t.group_name && t.group_name.trim()) {
         set.add(t.group_name.trim())
@@ -288,7 +345,6 @@ export function useTodos() {
     return Array.from(set)
   })
 
-  // Count of items per group
   const groupStats = computed<Record<string, { total: number; active: number; completed: number }>>(() => {
     const counts: Record<string, { total: number; active: number; completed: number }> = {}
     for (const t of todos.value) {
@@ -308,6 +364,16 @@ export function useTodos() {
 
   const filteredTodos = computed(() => {
     let result = todos.value
+
+    // Scope filter (mine vs shared)
+    const me = userId.value
+    if (me) {
+      if (scope.value === 'mine') {
+        result = result.filter(t => !t.user_id || t.user_id === me)
+      } else if (scope.value === 'shared') {
+        result = result.filter(t => Boolean(t.user_id && t.user_id !== me))
+      }
+    }
 
     // Group filter
     if (selectedGroup.value !== 'all') {
@@ -339,12 +405,14 @@ export function useTodos() {
     isAdding,
     activeActionId,
     filter,
+    scope,
     selectedGroup,
     searchQuery,
     availableGroups,
     groupStats,
     filteredTodos,
     stats,
+    isShared,
     loadTodos,
     addTodo,
     toggleTodo,

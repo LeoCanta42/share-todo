@@ -6,6 +6,7 @@ import { getGroupMeta } from '~/utils/groups'
 const props = defineProps<{
   todo: Todo
   isPending?: boolean
+  isShared?: boolean
   availableGroups?: string[]
 }>()
 
@@ -136,6 +137,16 @@ function cancelEdit() {
               @click="emit('toggle', todo)"
             >
               {{ todo.title }}
+            </span>
+
+            <!-- Shared badge -->
+            <span
+              v-if="isShared"
+              class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-100 text-sky-700 dark:bg-sky-950/80 dark:text-sky-300"
+              title="Attività condivisa con te da un altro utente"
+            >
+              <UIcon name="i-lucide-users" class="w-3 h-3" />
+              <span>Condivisa</span>
             </span>
 
             <!-- Subgroup Badge -->

@@ -1,18 +1,21 @@
 <script setup lang="ts">
-import type { TodoFilter, TodoStats } from '~/types/todo'
+import type { TodoFilter, TodoScope, TodoStats } from '~/types/todo'
 import { getGroupMeta } from '~/utils/groups'
 
 const props = defineProps<{
   filter: TodoFilter
+  scope: TodoScope
   selectedGroup: string
   searchQuery: string
   stats: TodoStats
   availableGroups: string[]
   groupStats: Record<string, { total: number; active: number; completed: number }>
+  hasSharedTodos?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'update:filter', value: TodoFilter): void
+  (e: 'update:scope', value: TodoScope): void
   (e: 'update:selectedGroup', value: string): void
   (e: 'update:searchQuery', value: string): void
   (e: 'clearCompleted'): void
@@ -24,10 +27,9 @@ const filterOptions = computed<{ label: string; value: TodoFilter; count: number
   { label: 'Completati', value: 'completed', count: props.stats.completed }
 ])
 
-// Only show groups that have at least 1 task or are selected
 const activeGroupsWithTasks = computed(() => {
   return props.availableGroups.filter(g => {
-    const hasCount = props.groupStats[g]?.total > 0
+    const hasCount = (props.groupStats[g]?.total ?? 0) > 0
     return hasCount || props.selectedGroup === g
   })
 })
@@ -35,6 +37,51 @@ const activeGroupsWithTasks = computed(() => {
 
 <template>
   <div class="space-y-3 pt-2">
+    <!-- Optional: Scope selector (Personali vs Condivisi) -->
+    <div v-if="hasSharedTodos" class="flex items-center gap-1.5 pb-0.5">
+      <div class="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mr-1">
+        Origine:
+      </div>
+      <div class="inline-flex p-0.5 bg-gray-100 dark:bg-gray-800/80 rounded-lg gap-1 text-xs">
+        <button
+          type="button"
+          class="px-2.5 py-1 rounded-md font-medium transition-all"
+          :class="[
+            scope === 'all'
+              ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-xs'
+              : 'text-gray-500 hover:text-gray-900 dark:text-gray-400'
+          ]"
+          @click="emit('update:scope', 'all')"
+        >
+          Tutti
+        </button>
+        <button
+          type="button"
+          class="px-2.5 py-1 rounded-md font-medium transition-all"
+          :class="[
+            scope === 'mine'
+              ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-xs'
+              : 'text-gray-500 hover:text-gray-900 dark:text-gray-400'
+          ]"
+          @click="emit('update:scope', 'mine')"
+        >
+          I miei
+        </button>
+        <button
+          type="button"
+          class="px-2.5 py-1 rounded-md font-medium transition-all"
+          :class="[
+            scope === 'shared'
+              ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-xs'
+              : 'text-gray-500 hover:text-gray-900 dark:text-gray-400'
+          ]"
+          @click="emit('update:scope', 'shared')"
+        >
+          Condivisi con me
+        </button>
+      </div>
+    </div>
+
     <!-- Subgroups Filter Chips -->
     <div v-if="activeGroupsWithTasks.length > 0" class="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
       <div class="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider whitespace-nowrap mr-1">

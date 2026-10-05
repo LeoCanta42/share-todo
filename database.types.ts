@@ -44,6 +44,7 @@ export type Database = {
       todo_shares: {
         Row: {
           created_at: string | null
+          group_name: string | null
           id: number
           owner_id: string
           permission: 'read' | 'edit'
@@ -52,6 +53,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string | null
+          group_name?: string | null
           id?: number
           owner_id?: string
           permission?: 'read' | 'edit'
@@ -60,6 +62,7 @@ export type Database = {
         }
         Update: {
           created_at?: string | null
+          group_name?: string | null
           id?: number
           owner_id?: string
           permission?: 'read' | 'edit'
