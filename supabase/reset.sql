@@ -1,5 +1,5 @@
 -- ==============================================================================
--- supabase/reset.sql — Nuxt Todo: database reset & cleanup helpers
+-- supabase/reset.sql — ShareToDo: database reset & cleanup helpers
 -- ------------------------------------------------------------------------------
 -- WHERE TO RUN
 --   Supabase Dashboard -> SQL Editor. It executes as a privileged role.

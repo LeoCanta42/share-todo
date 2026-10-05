@@ -1,189 +1,232 @@
 <script setup lang="ts">
-import type { TodoFilter, TodoScope, TodoStats } from '~/types/todo'
-import { getGroupMeta } from '~/utils/groups'
+import { SORT_ORDERS, usePreferences } from '~/composables/usePreferences'
 
-const props = defineProps<{
-  filter: TodoFilter
-  scope: TodoScope
-  selectedGroup: string
-  searchQuery: string
-  stats: TodoStats
-  availableGroups: string[]
-  groupStats: Record<string, { total: number; active: number; completed: number }>
-  hasSharedTodos?: boolean
-}>()
-
+/**
+ * Filter toolbar: status tabs, origin (mine/shared), group chips, search and sort.
+ *
+ * Deliberately not sticky: on a phone the bar is three rows tall, so pinning it
+ * would eat a third of the viewport — the floating action button covers quick
+ * access to the top of the page instead.
+ */
 const emit = defineEmits<{
-  (e: 'update:filter', value: TodoFilter): void
-  (e: 'update:scope', value: TodoScope): void
-  (e: 'update:selectedGroup', value: string): void
-  (e: 'update:searchQuery', value: string): void
   (e: 'clearCompleted'): void
 }>()
 
-const filterOptions = computed<{ label: string; value: TodoFilter; count: number }[]>(() => [
-  { label: 'Tutti', value: 'all', count: props.stats.total },
-  { label: 'Da fare', value: 'active', count: props.stats.active },
-  { label: 'Completati', value: 'completed', count: props.stats.completed }
+const {
+  filter,
+  scope,
+  selectedGroup,
+  searchQuery,
+  stats,
+  availableGroups,
+  groupStats,
+  groupMeta,
+  isShared,
+  todos
+} = useTodos()
+
+const { prefs, update } = usePreferences()
+
+const hasSharedTasks = computed(() => todos.value.some(t => isShared(t)))
+
+const filterOptions = computed(() => [
+  { id: 'all', label: 'Tutti', count: stats.value.total },
+  { id: 'active', label: 'Da fare', count: stats.value.active },
+  { id: 'completed', label: 'Fatti', count: stats.value.completed }
 ])
 
-const activeGroupsWithTasks = computed(() => {
-  return props.availableGroups.filter(g => {
-    const hasCount = (props.groupStats[g]?.total ?? 0) > 0
-    return hasCount || props.selectedGroup === g
-  })
+const scopeOptions = [
+  { id: 'all', label: 'Tutti' },
+  { id: 'mine', label: 'Miei' },
+  { id: 'shared', label: 'Condivisi' }
+]
+
+/** Only groups that actually hold activities are worth a chip. */
+const activeGroupsWithTasks = computed(() =>
+  availableGroups.value.filter(g => (groupStats.value[g]?.total ?? 0) > 0 || selectedGroup.value === g)
+)
+
+const hasActiveFilters = computed(() =>
+  filter.value !== 'all' || scope.value !== 'all' || selectedGroup.value !== 'all' || searchQuery.value.trim() !== ''
+)
+
+function clearFilters() {
+  filter.value = 'all'
+  scope.value = 'all'
+  selectedGroup.value = 'all'
+  searchQuery.value = ''
+}
+
+const sortModel = computed({
+  get: () => prefs.value.sort,
+  set: (value: string) => update('sort', value as typeof prefs.value.sort)
 })
 </script>
 
 <template>
-  <div class="space-y-3 pt-2">
-    <!-- Optional: Scope selector (Personali vs Condivisi) -->
-    <div v-if="hasSharedTodos" class="flex items-center gap-1.5 pb-0.5">
-      <div class="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mr-1">
-        Origine:
-      </div>
-      <div class="inline-flex p-0.5 bg-gray-100 dark:bg-gray-800/80 rounded-lg gap-1 text-xs">
-        <button
-          type="button"
-          class="px-2.5 py-1 rounded-md font-medium transition-all"
-          :class="[
-            scope === 'all'
-              ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-xs'
-              : 'text-gray-500 hover:text-gray-900 dark:text-gray-400'
-          ]"
-          @click="emit('update:scope', 'all')"
-        >
-          Tutti
-        </button>
-        <button
-          type="button"
-          class="px-2.5 py-1 rounded-md font-medium transition-all"
-          :class="[
-            scope === 'mine'
-              ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-xs'
-              : 'text-gray-500 hover:text-gray-900 dark:text-gray-400'
-          ]"
-          @click="emit('update:scope', 'mine')"
-        >
-          I miei
-        </button>
-        <button
-          type="button"
-          class="px-2.5 py-1 rounded-md font-medium transition-all"
-          :class="[
-            scope === 'shared'
-              ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-xs'
-              : 'text-gray-500 hover:text-gray-900 dark:text-gray-400'
-          ]"
-          @click="emit('update:scope', 'shared')"
-        >
-          Condivisi con me
-        </button>
-      </div>
-    </div>
-
-    <!-- Subgroups Filter Chips -->
-    <div v-if="activeGroupsWithTasks.length > 0" class="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-      <div class="text-[11px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider whitespace-nowrap mr-1">
-        Gruppo:
-      </div>
-
-      <button
-        type="button"
-        class="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-all border"
-        :class="[
-          selectedGroup === 'all'
-            ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900 border-transparent shadow-xs'
-            : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-700'
-        ]"
-        @click="emit('update:selectedGroup', 'all')"
-      >
-        <span>Tutti</span>
-        <span class="text-[10px] opacity-75">({{ stats.total }})</span>
-      </button>
-
-      <button
-        v-for="grp in activeGroupsWithTasks"
-        :key="grp"
-        type="button"
-        class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-all border"
-        :class="[
-          selectedGroup === grp
-            ? 'ring-2 ring-emerald-500 border-transparent ' + getGroupMeta(grp).colorClass
-            : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-700'
-        ]"
-        @click="emit('update:selectedGroup', grp)"
-      >
-        <UIcon :name="getGroupMeta(grp).icon" class="w-3.5 h-3.5" />
-        <span>{{ grp }}</span>
-        <span class="text-[10px] opacity-75">({{ groupStats[grp]?.total || 0 }})</span>
-      </button>
-    </div>
-
-    <!-- Status Filters & Search Bar -->
-    <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-      <!-- Status Tabs -->
-      <div class="inline-flex p-1 bg-gray-100 dark:bg-gray-800/80 rounded-xl gap-1">
+  <div class="space-y-2.5">
+    <!-- Status tabs -->
+    <div class="flex flex-wrap items-center gap-2">
+      <div class="flex min-w-0 flex-1 gap-1 overflow-x-auto rounded-xl bg-slate-100 p-1 scrollbar-none dark:bg-slate-800/80">
         <button
           v-for="item in filterOptions"
-          :key="item.value"
+          :key="item.id"
           type="button"
-          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
-          :class="[
-            filter === item.value
-              ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-xs'
-              : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
-          ]"
-          @click="emit('update:filter', item.value)"
+          class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition-all focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+          :class="filter === item.id
+            ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-900 dark:text-white'
+            : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'"
+          :aria-pressed="filter === item.id"
+          @click="filter = item.id as typeof filter"
         >
           <span>{{ item.label }}</span>
           <span
-            class="px-1.5 py-0.2 rounded-full text-[10px] font-bold"
-            :class="[
-              filter === item.value
-                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
-                : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
-            ]"
+            class="rounded-full px-1.5 text-[10px] font-bold"
+            :class="filter === item.id
+              ? 'bg-accent-100 text-accent-700 dark:bg-accent-950 dark:text-accent-300'
+              : 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300'"
           >
             {{ item.count }}
           </span>
         </button>
       </div>
 
-      <!-- Search & Clear completed -->
+      <UButton
+        v-if="hasActiveFilters"
+        color="neutral"
+        variant="ghost"
+        size="xs"
+        icon="i-lucide-filter-x"
+        class="rounded-lg"
+        @click="clearFilters"
+      >
+        Azzera
+      </UButton>
+    </div>
+
+    <!-- Origin (only when someone shared something with you) -->
+    <div v-if="hasSharedTasks" class="flex items-center gap-2">
+      <span class="todo-meta font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">Origine</span>
+      <div class="flex gap-1 rounded-lg bg-slate-100 p-0.5 dark:bg-slate-800/80">
+        <button
+          v-for="item in scopeOptions"
+          :key="item.id"
+          type="button"
+          class="rounded-md px-2.5 py-1 text-xs font-medium transition-all focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+          :class="scope === item.id
+            ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-900 dark:text-white'
+            : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'"
+          :aria-pressed="scope === item.id"
+          @click="scope = item.id as typeof scope"
+        >
+          {{ item.label }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Group chips -->
+    <div v-if="activeGroupsWithTasks.length > 0" class="flex items-center gap-1.5 pb-0.5">
+      <span class="todo-meta mr-1 font-semibold tracking-wider whitespace-nowrap text-slate-400 uppercase dark:text-slate-500">
+        Gruppo
+      </span>
+
+      <div class="flex min-w-0 flex-1 gap-1.5 overflow-x-auto pb-1 pt-1 scrollbar-none">
+        <button
+          type="button"
+          class="inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-semibold whitespace-nowrap transition-all focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+          :class="selectedGroup === 'all'
+            ? 'border-transparent bg-slate-900 text-white shadow-xs dark:bg-white dark:text-slate-900'
+            : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400 dark:hover:border-slate-700'"
+          :aria-pressed="selectedGroup === 'all'"
+          @click="selectedGroup = 'all'"
+        >
+          <span>Tutti</span>
+          <span class="text-[10px] opacity-75">({{ stats.total }})</span>
+        </button>
+
+        <button
+          v-for="group in activeGroupsWithTasks"
+          :key="group"
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold whitespace-nowrap transition-all focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+          :class="selectedGroup === group
+            ? `border-transparent ring-2 ring-accent-500 ${groupMeta(group).colorClass}`
+            : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400 dark:hover:border-slate-700'"
+          :aria-pressed="selectedGroup === group"
+          @click="selectedGroup = group"
+        >
+          <UIcon :name="groupMeta(group).icon" class="h-3.5 w-3.5" />
+          <span>{{ group }}</span>
+          <span class="text-[10px] opacity-75">({{ groupStats[group]?.total || 0 }})</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Search, sort, cleanup -->
+    <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+      <div class="relative flex-1">
+        <UIcon
+          name="i-lucide-search"
+          class="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500"
+        />
+        <input
+          :value="searchQuery"
+          type="search"
+          placeholder="Cerca testo o gruppo…"
+          class="w-full rounded-xl border border-transparent bg-slate-100 py-1.5 pr-8 pl-8 text-base text-slate-900 transition-all placeholder-slate-400 focus:border-accent-500 focus:bg-white focus:outline-none sm:text-xs dark:bg-slate-800/80 dark:text-white dark:placeholder-slate-500 dark:focus:bg-slate-900"
+          aria-label="Cerca attività"
+          @input="searchQuery = ($event.target as HTMLInputElement).value"
+        >
+        <button
+          v-if="searchQuery"
+          type="button"
+          class="absolute top-1/2 right-2 -translate-y-1/2 rounded p-0.5 text-slate-400 transition-colors hover:text-slate-700 dark:hover:text-slate-200"
+          aria-label="Cancella la ricerca"
+          @click="searchQuery = ''"
+        >
+          <UIcon name="i-lucide-x" class="h-3.5 w-3.5" />
+        </button>
+      </div>
+
       <div class="flex items-center gap-2">
-        <div class="relative flex-1 sm:w-48">
-          <UIcon
-            name="i-lucide-search"
-            class="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500 pointer-events-none"
-          />
-          <input
-            :value="searchQuery"
-            type="text"
-            placeholder="Cerca per testo o gruppo..."
-            class="w-full pl-8 pr-7 py-1.5 bg-gray-100 dark:bg-gray-800/80 rounded-xl text-xs text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 border border-transparent focus:border-emerald-500 focus:bg-white dark:focus:bg-gray-900 focus:outline-none transition-all"
-            @input="emit('update:searchQuery', ($event.target as HTMLInputElement).value)"
+        <div class="relative flex-1 sm:flex-none">
+          <UIcon name="i-lucide-arrow-up-down" class="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+          <select
+            v-model="sortModel"
+            class="w-full appearance-none rounded-xl border border-transparent bg-slate-100 py-1.5 pr-7 pl-8 text-base font-medium text-slate-700 focus:border-accent-500 focus:outline-none sm:w-auto sm:text-xs dark:bg-slate-800/80 dark:text-slate-200"
+            aria-label="Ordina le attività"
           >
-          <button
-            v-if="searchQuery"
-            type="button"
-            class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-xs"
-            @click="emit('update:searchQuery', '')"
-          >
-            <UIcon name="i-lucide-x" class="w-3.5 h-3.5" />
-          </button>
+            <option v-for="order in SORT_ORDERS" :key="order.id" :value="order.id">
+              {{ order.label }}
+            </option>
+          </select>
+          <UIcon name="i-lucide-chevron-down" class="pointer-events-none absolute top-1/2 right-2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
         </div>
+
+        <button
+          type="button"
+          class="flex h-8 w-8 items-center justify-center rounded-xl border transition-colors focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+          :class="prefs.groupSections
+            ? 'border-transparent bg-accent-100 text-accent-700 dark:bg-accent-950/70 dark:text-accent-300'
+            : 'border-slate-200 bg-white text-slate-400 hover:text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:hover:text-slate-200'"
+          :aria-pressed="prefs.groupSections"
+          :title="prefs.groupSections ? 'Intestazioni dei gruppi attive' : 'Intestazioni dei gruppi disattivate'"
+          @click="update('groupSections', !prefs.groupSections)"
+        >
+          <UIcon name="i-lucide-list-tree" class="h-4 w-4" />
+        </button>
 
         <UButton
           v-if="stats.completed > 0"
+          color="error"
           variant="ghost"
-          color="neutral"
           size="xs"
           icon="i-lucide-trash"
-          class="text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300"
+          class="rounded-lg whitespace-nowrap"
           @click="emit('clearCompleted')"
         >
           <span class="hidden sm:inline">Elimina completati</span>
+          <span class="sm:hidden">Pulisci</span>
         </UButton>
       </div>
     </div>

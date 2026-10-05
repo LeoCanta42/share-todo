@@ -1,5 +1,6 @@
 import type { Database } from '~/types/database.types'
 import type { TodoPermission, TodoShare } from '~/types/todo'
+import type { Todo } from '~/types/todo'
 
 export function useShares() {
   const supabase = useSupabaseClient<Database>()
@@ -17,37 +18,39 @@ export function useShares() {
 
     loading.value = true
     try {
-      // 1. Shares created by me
-      const { data: myData, error: myError } = await supabase
-        .from('todo_shares')
-        .select('*')
-        .eq('owner_id', id)
-        .order('created_at', { ascending: false })
-
-      if (myError) {
-        console.error('Error loading my shares:', myError)
-      } else {
-        myShares.value = myData ?? []
-      }
-
-      // 2. Shares received by me. Match on the resolved user id, and fall back to
-      //    the email for invitations sent before the recipient had an account.
+      // Shares received by me. Match on the resolved user id, and fall back to
+      // the email for invitations sent before the recipient had an account.
       const email = userEmail.value
       const recipientFilters = [`shared_with_id.eq.${id}`]
       if (email) {
         recipientFilters.push(`shared_with_email.ilike.${email}`)
       }
 
-      const { data: recData, error: recError } = await supabase
-        .from('todo_shares')
-        .select('*')
-        .or(recipientFilters.join(','))
-        .neq('owner_id', id)
+      // Both queries run together: they used to be sequential, which doubled the
+      // wait before the sharing panel had anything to show.
+      const [mine, received] = await Promise.all([
+        supabase
+          .from('todo_shares')
+          .select('*')
+          .eq('owner_id', id)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('todo_shares')
+          .select('*')
+          .or(recipientFilters.join(','))
+          .neq('owner_id', id)
+      ])
 
-      if (recError) {
-        console.error('Error loading received shares:', recError)
+      if (mine.error) {
+        console.error('Error loading my shares:', mine.error)
       } else {
-        receivedShares.value = recData ?? []
+        myShares.value = mine.data ?? []
+      }
+
+      if (received.error) {
+        console.error('Error loading received shares:', received.error)
+      } else {
+        receivedShares.value = received.data ?? []
       }
     } catch (err: unknown) {
       console.error('Unexpected error loading shares:', err)
@@ -58,6 +61,50 @@ export function useShares() {
 
   function describeScope(groupName: string | null): string {
     return groupName ? `il gruppo "${groupName}"` : 'l\'intera lista'
+  }
+
+  /**
+   * Grants indexed by owner and group, so the permission check for a row is two map
+   * lookups instead of scanning every received share per row per render.
+   * `*` stands for a whole-list grant.
+   */
+  const grantsByOwner = computed<Map<string, Map<string, TodoPermission>>>(() => {
+    const map = new Map<string, Map<string, TodoPermission>>()
+    for (const share of receivedShares.value) {
+      const owner = share.owner_id
+      if (!owner) continue
+
+      let groups = map.get(owner)
+      if (!groups) {
+        groups = new Map<string, TodoPermission>()
+        map.set(owner, groups)
+      }
+      groups.set(share.group_name ?? '*', share.permission)
+    }
+    return map
+  })
+
+  /**
+   * What the current user may do with one activity.
+   *
+   * Received shares are already loaded, so the UI can grey out read-only rows
+   * instead of letting the user try and fail against RLS. `unknown` (shares not
+   * loaded yet, or an activity shared some other way) deliberately keeps the
+   * actions enabled — the server stays the authority.
+   */
+  function todoPermission(todo: Todo): 'edit' | 'read' | 'unknown' {
+    const me = userId.value
+    if (!me) return 'unknown'
+    if (!todo.user_id || todo.user_id === me) return 'edit'
+
+    const grants = grantsByOwner.value.get(todo.user_id)
+    if (!grants) return 'unknown'
+
+    // A group-specific grant wins over a whole-list grant.
+    const grant = grants.get(todo.group_name ?? 'Generale') ?? grants.get('*')
+    if (!grant) return 'read'
+
+    return grant === 'edit' ? 'edit' : 'read'
   }
 
   async function shareList(
@@ -182,6 +229,7 @@ export function useShares() {
     isSharing,
     loadShares,
     shareList,
-    removeShare
+    removeShare,
+    todoPermission
   }
 }

@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!--
+    Vector twin of public/icons/*.png: same emerald -> teal -> cyan diagonal,
+    same corner radius (0.22 of the box) and the same bold check, scaled to 56%
+    of the box so the favicon and the installed app icon stay identical.
+  -->
+  <defs>
+    <linearGradient id="nt-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#34d399"/>
+      <stop offset="0.5" stop-color="#0d9488"/>
+      <stop offset="1" stop-color="#0891b2"/>
+    </linearGradient>
+    <radialGradient id="nt-sheen" cx="0.3" cy="0.26" r="0.66">
+      <stop offset="0" stop-color="#fff" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="nt-shape">
+      <rect width="64" height="64" rx="14.1"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#nt-shape)">
+    <rect width="64" height="64" fill="url(#nt-bg)"/>
+    <rect width="64" height="64" fill="url(#nt-sheen)"/>
+  </g>
+  <path d="M49.92 19.68 25.28 44.32 14.08 33.12" fill="none" stroke="#fff"
+        stroke-width="4.84" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

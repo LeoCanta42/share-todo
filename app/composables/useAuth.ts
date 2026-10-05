@@ -7,35 +7,6 @@ export function useAuth() {
 
   const loading = ref(false)
 
-  async function loginWithGoogle() {
-    loading.value = true
-    try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined
-        }
-      })
-
-      if (error) {
-        toast.add({
-          title: 'Errore accesso Google',
-          description: error.message,
-          color: 'error'
-        })
-      }
-    } catch (err: unknown) {
-      console.error('Google login error:', err)
-      toast.add({
-        title: 'Errore',
-        description: 'Impossibile completare l\'accesso con Google.',
-        color: 'error'
-      })
-    } finally {
-      loading.value = false
-    }
-  }
-
   async function loginWithEmail(email: string, password: string): Promise<boolean> {
     loading.value = true
     try {
@@ -134,7 +105,6 @@ export function useAuth() {
   return {
     user,
     loading,
-    loginWithGoogle,
     loginWithEmail,
     signUpWithEmail,
     logout

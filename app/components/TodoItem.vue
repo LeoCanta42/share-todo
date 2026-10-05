@@ -1,19 +1,37 @@
 <script setup lang="ts">
 import type { Todo } from '~/types/todo'
 import { formatDate } from '~/utils/date'
-import { getGroupMeta } from '~/utils/groups'
+import type { GroupMeta } from '~/utils/groups'
+import { usePreferences } from '~/composables/usePreferences'
 
-const props = defineProps<{
+/**
+ * One activity row.
+ *
+ * Behaviour changes from the previous version:
+ * - clicking the label opens the reading modal instead of toggling (the two
+ *   previous handlers fought each other: the single click toggled twice and the
+ *   double click also started an edit);
+ * - the label is selectable and wrapped, so long text can be read and copied;
+ * - long text gets a "Leggi tutto" inline expansion plus the modal;
+ * - all theme colours come from the accent tokens.
+ */
+const props = withDefaults(defineProps<{
   todo: Todo
+  groupMeta: GroupMeta
   isPending?: boolean
   isShared?: boolean
+  /** False for a list shared with me in read-only mode. */
+  canEdit?: boolean
   availableGroups?: string[]
-}>()
+}>(), {
+  canEdit: true
+})
 
 const emit = defineEmits<{
   (e: 'toggle', todo: Todo): void
   (e: 'updateTitle', id: number, newTitle: string): void
   (e: 'updateGroup', id: number, newGroup: string): void
+  (e: 'openDetail', todo: Todo): void
   (e: 'filterGroup', group: string): void
   (e: 'delete', id: number): void
 }>()
@@ -21,18 +39,42 @@ const emit = defineEmits<{
 const isEditing = ref(false)
 const editTitle = ref('')
 const editGroup = ref('Generale')
-const editInputRef = ref<HTMLInputElement | null>(null)
+const editRef = ref<HTMLTextAreaElement | null>(null)
 
-const groupMeta = computed(() => getGroupMeta(props.todo.group_name))
+const { prefs } = usePreferences()
+
+const isLong = computed(() => props.todo.title.length > 110 || props.todo.title.includes('\n'))
+
+/**
+ * Only the compact density truncates the text: "Normale" and "Comoda" show the
+ * whole activity in the row (the list just gets taller and keeps scrolling), while
+ * compact keeps every row to two lines with an ellipsis.
+ */
+const isClamped = computed(() => prefs.value.density === 'compact' && isLong.value)
+
+/** Screen readers get a short name instead of a whole paragraph. */
+const shortTitle = computed(() => {
+  const single = props.todo.title.replace(/\s+/g, ' ').trim()
+  return single.length > 60 ? `${single.slice(0, 59)}…` : single
+})
 
 function startEditing() {
+  if (props.isPending) return
   editTitle.value = props.todo.title
   editGroup.value = props.todo.group_name || 'Generale'
   isEditing.value = true
   nextTick(() => {
-    editInputRef.value?.focus()
-    editInputRef.value?.select()
+    const el = editRef.value
+    el?.focus()
+    el?.setSelectionRange(el.value.length, el.value.length)
+    autosize(el)
   })
+}
+
+function autosize(el: HTMLTextAreaElement | null) {
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${Math.min(el.scrollHeight, 260)}px`
 }
 
 function saveEdit() {
@@ -52,146 +94,184 @@ function cancelEdit() {
   editTitle.value = props.todo.title
   editGroup.value = props.todo.group_name || 'Generale'
 }
+
+/** Keep drag-selection working: a click that ends a selection must not open the modal. */
+function openDetail() {
+  if (import.meta.client && (window.getSelection()?.toString()?.length ?? 0) > 0) return
+  emit('openDetail', props.todo)
+}
 </script>
 
 <template>
-  <div
-    class="group relative flex items-center justify-between p-3.5 sm:p-4 rounded-xl border transition-all duration-200"
+  <article
+    class="todo-row group relative flex items-start rounded-2xl border transition-all duration-200"
     :class="[
       todo.completed
-        ? 'bg-gray-50/70 dark:bg-gray-900/40 border-gray-200/60 dark:border-gray-800/60 opacity-80'
-        : 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800 shadow-xs hover:shadow-md hover:border-emerald-500/30 dark:hover:border-emerald-500/30'
+        ? 'border-slate-200/70 bg-slate-50/80 dark:border-slate-800/70 dark:bg-slate-900/40'
+        : 'surface-card hover:border-accent-500/40 hover:shadow-md dark:hover:border-accent-500/30',
+      isShared ? 'border-l-2 border-l-sky-400/70 dark:border-l-sky-500/50' : ''
     ]"
   >
-    <!-- Left side: Checkbox & task details -->
-    <div class="flex items-start sm:items-center gap-3.5 flex-1 min-w-0 pr-3">
-      <!-- Custom Animated Checkbox -->
+    <!-- Completion toggle: the only thing that toggles on click -->
+    <button
+      type="button"
+      role="checkbox"
+      :aria-checked="Boolean(todo.completed)"
+      :aria-label="todo.completed ? `Segna come da fare: ${shortTitle}` : `Segna come completata: ${shortTitle}`"
+      class="mt-0.5 flex h-5.5 w-5.5 flex-shrink-0 items-center justify-center rounded-lg border transition-all duration-150 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+      :class="[
+        todo.completed
+          ? 'border-accent-500 bg-accent-500 text-white'
+          : 'border-slate-300 bg-white hover:border-accent-500 dark:border-slate-600 dark:bg-slate-800 dark:hover:border-accent-400'
+      ]"
+      :disabled="isPending || !canEdit"
+      @click="emit('toggle', todo)"
+    >
+      <UIcon
+        name="i-lucide-check"
+        class="h-3.5 w-3.5 transition-transform duration-150"
+        :class="todo.completed ? 'scale-100' : 'scale-0'"
+      />
+    </button>
+
+    <div class="min-w-0 flex-1">
+      <!-- Inline editor -->
+      <form v-if="isEditing" class="w-full space-y-2" @submit.prevent="saveEdit">
+        <textarea
+          ref="editRef"
+          v-model="editTitle"
+          rows="1"
+          class="todo-title w-full resize-none rounded-xl border border-accent-500 bg-white px-2.5 py-1.5 text-slate-900 focus:ring-2 focus:ring-accent-500/25 focus:outline-none dark:bg-slate-800 dark:text-white"
+          aria-label="Testo dell'attività"
+          @input="autosize(editRef)"
+          @keydown.esc.prevent="cancelEdit"
+          @keydown.meta.enter.prevent="saveEdit"
+          @keydown.ctrl.enter.prevent="saveEdit"
+        />
+        <div class="flex flex-wrap items-center gap-2">
+          <select
+            v-if="availableGroups && availableGroups.length > 0"
+            v-model="editGroup"
+            class="rounded-lg border border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-800 focus:border-accent-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+            aria-label="Gruppo"
+          >
+            <option v-for="g in availableGroups" :key="g" :value="g">{{ g }}</option>
+          </select>
+          <button
+            type="submit"
+            class="rounded-lg bg-accent-600 px-2.5 py-1 text-xs font-semibold text-white transition-colors hover:bg-accent-700"
+          >
+            Salva
+          </button>
+          <button
+            type="button"
+            class="rounded-lg px-2 py-1 text-xs font-medium text-slate-500 transition-colors hover:text-slate-800 dark:hover:text-slate-200"
+            @click="cancelEdit"
+          >
+            Annulla
+          </button>
+        </div>
+      </form>
+
+      <!-- Read view -->
+      <template v-else>
+        <button
+          type="button"
+          class="block w-full cursor-pointer text-left focus-visible:outline-none"
+          :aria-label="`Apri il dettaglio di: ${shortTitle}`"
+          @click="openDetail"
+        >
+          <span
+            class="todo-title w-full whitespace-pre-line break-words select-text"
+            :class="[
+              // `display` must come from exactly one utility here: line-clamp-2 relies
+              // on `display: -webkit-box`, which a sibling `block` would override — the
+              // reason the text was not actually being truncated.
+              isClamped ? 'line-clamp-2' : 'block',
+              todo.completed
+                ? 'text-slate-400 line-through dark:text-slate-500'
+                : 'text-slate-800 hover:text-accent-700 dark:text-slate-100 dark:hover:text-accent-300'
+            ]"
+          >{{ todo.title }}</span>
+        </button>
+
+        <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <!-- Group chip: tapping it filters the list -->
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+            :class="groupMeta.colorClass"
+            :title="`Filtra per gruppo: ${groupMeta.name}`"
+            @click.stop="emit('filterGroup', groupMeta.name)"
+          >
+            <UIcon :name="groupMeta.icon" class="h-3 w-3" />
+            <span class="todo-meta">{{ groupMeta.name }}</span>
+          </button>
+
+          <span
+            v-if="isShared"
+            class="inline-flex items-center gap-1 rounded-full bg-sky-100 px-2 py-0.5 font-semibold text-sky-700 dark:bg-sky-950/80 dark:text-sky-300"
+            title="Attività condivisa con te da un altro utente"
+          >
+            <UIcon name="i-lucide-users" class="h-3 w-3" />
+            <span class="todo-meta">Condivisa</span>
+          </span>
+
+          <span
+            v-if="!canEdit"
+            class="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+            title="Questa lista è condivisa in sola lettura"
+          >
+            <UIcon name="i-lucide-lock" class="h-3 w-3" />
+            <span class="todo-meta">Sola lettura</span>
+          </span>
+
+          <span
+            v-else-if="todo.created_at"
+            class="todo-meta inline-flex items-center gap-1 text-slate-400 select-none dark:text-slate-500"
+          >
+            <UIcon name="i-lucide-clock" class="h-3 w-3" />
+            <span>{{ formatDate(todo.created_at) }}</span>
+          </span>
+
+          <!-- Compact density truncates: make the rest one tap away. -->
+          <button
+            v-if="isClamped"
+            type="button"
+            class="todo-meta inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-semibold text-accent-700 transition-colors hover:bg-accent-50 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none dark:text-accent-300 dark:hover:bg-accent-950/50"
+            @click="emit('openDetail', todo)"
+          >
+            <UIcon name="i-lucide-chevron-down" class="h-3 w-3" />
+            <span>Leggi tutto · {{ todo.title.length }} caratteri</span>
+          </button>
+        </div>
+      </template>
+    </div>
+
+    <!-- Row actions: always reachable on touch, revealed on hover with a pointer -->
+    <div
+      v-if="canEdit"
+      class="flex flex-shrink-0 items-center gap-0.5 transition-opacity focus-within:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+    >
       <button
         type="button"
-        role="checkbox"
-        :aria-checked="Boolean(todo.completed)"
-        class="w-5 h-5 rounded-lg border flex items-center justify-center transition-all duration-150 flex-shrink-0 mt-0.5 sm:mt-0 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
-        :class="[
-          todo.completed
-            ? 'bg-emerald-500 border-emerald-500 text-white'
-            : 'border-gray-300 dark:border-gray-600 hover:border-emerald-500 dark:hover:border-emerald-400 bg-white dark:bg-gray-800'
-        ]"
-        :disabled="isPending"
-        @click="emit('toggle', todo)"
-      >
-        <UIcon
-          name="i-lucide-check"
-          class="w-3.5 h-3.5 transition-transform transform"
-          :class="todo.completed ? 'scale-100' : 'scale-0'"
-        />
-      </button>
-
-      <!-- Content display / Inline edit -->
-      <div class="flex-1 min-w-0">
-        <!-- Edit Form -->
-        <form v-if="isEditing" @submit.prevent="saveEdit" class="space-y-2 w-full">
-          <input
-            ref="editInputRef"
-            v-model="editTitle"
-            type="text"
-            class="w-full px-2.5 py-1 text-sm bg-white dark:bg-gray-800 border border-emerald-500 rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
-            @keydown.esc="cancelEdit"
-          >
-          <div class="flex items-center gap-2">
-            <select
-              v-if="availableGroups && availableGroups.length > 0"
-              v-model="editGroup"
-              class="px-2 py-0.5 text-xs bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md text-gray-800 dark:text-gray-200"
-            >
-              <option v-for="g in availableGroups" :key="g" :value="g">
-                {{ g }}
-              </option>
-            </select>
-            <button
-              type="submit"
-              class="px-2.5 py-0.5 text-xs font-medium bg-emerald-600 text-white rounded-md hover:bg-emerald-700"
-            >
-              Salva
-            </button>
-            <button
-              type="button"
-              class="px-2 py-0.5 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-              @click="cancelEdit"
-            >
-              Annulla
-            </button>
-          </div>
-        </form>
-
-        <!-- Normal View -->
-        <div v-else class="flex flex-col gap-1">
-          <div class="flex items-center gap-2 flex-wrap">
-            <span
-              class="text-sm font-medium transition-all select-none cursor-pointer"
-              :class="[
-                todo.completed
-                  ? 'line-through text-gray-400 dark:text-gray-500'
-                  : 'text-gray-800 dark:text-gray-100 hover:text-emerald-600 dark:hover:text-emerald-400'
-              ]"
-              @dblclick="startEditing"
-              @click="emit('toggle', todo)"
-            >
-              {{ todo.title }}
-            </span>
-
-            <!-- Shared badge -->
-            <span
-              v-if="isShared"
-              class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-100 text-sky-700 dark:bg-sky-950/80 dark:text-sky-300"
-              title="Attività condivisa con te da un altro utente"
-            >
-              <UIcon name="i-lucide-users" class="w-3 h-3" />
-              <span>Condivisa</span>
-            </span>
-
-            <!-- Subgroup Badge -->
-            <button
-              type="button"
-              class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold transition-opacity hover:opacity-80"
-              :class="groupMeta.colorClass"
-              :title="`Filtra per gruppo: ${groupMeta.name}`"
-              @click.stop="emit('filterGroup', groupMeta.name)"
-            >
-              <UIcon :name="groupMeta.icon" class="w-3 h-3" />
-              <span>{{ groupMeta.name }}</span>
-            </button>
-          </div>
-
-          <!-- Timestamp badge -->
-          <div v-if="todo.created_at" class="text-[11px] text-gray-400 dark:text-gray-500 flex items-center gap-1 select-none">
-            <UIcon name="i-lucide-clock" class="w-3 h-3" />
-            <span>{{ formatDate(todo.created_at) }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Right side: Actions -->
-    <div class="flex items-center gap-1 opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-      <UButton
-        variant="ghost"
-        color="neutral"
-        size="xs"
-        icon="i-lucide-pencil"
-        :aria-label="`Modifica ${todo.title}`"
-        class="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+        class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none dark:hover:bg-slate-800 dark:hover:text-slate-200"
+        :aria-label="`Modifica ${shortTitle}`"
+        title="Modifica in linea"
         @click="startEditing"
-      />
-      <UButton
-        variant="ghost"
-        color="neutral"
-        size="xs"
-        icon="i-lucide-trash-2"
-        :aria-label="`Elimina ${todo.title}`"
-        class="text-gray-400 hover:text-red-500 dark:hover:text-red-400"
-        :loading="isPending"
+      >
+        <UIcon name="i-lucide-pencil" class="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 focus-visible:ring-2 focus-visible:ring-red-400/40 focus-visible:outline-none dark:hover:bg-red-950/40 dark:hover:text-red-400"
+        :aria-label="`Elimina ${shortTitle}`"
+        title="Elimina"
+        :disabled="isPending"
         @click="emit('delete', todo.id)"
-      />
+      >
+        <UIcon :name="isPending ? 'i-lucide-loader-circle' : 'i-lucide-trash-2'" class="h-4 w-4" :class="isPending ? 'animate-spin' : ''" />
+      </button>
     </div>
-  </div>
+  </article>
 </template>

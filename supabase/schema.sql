@@ -1,5 +1,5 @@
 -- ==============================================================================
--- Nuxt Todo - Complete Database Schema with Authentication & RLS & Sharing
+-- ShareToDo - Complete Database Schema with Authentication & RLS & Sharing
 -- Execute this script in your Supabase Dashboard -> SQL Editor
 --
 -- La condivisione può essere di DUE livelli:
