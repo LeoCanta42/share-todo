@@ -1,18 +1,23 @@
 import type { Database } from '~/types/database.types'
 import type { TodoPermission, TodoShare } from '~/types/todo'
+import { useGroups } from '~/composables/useGroups'
 
 /**
  * The only fields the grant lookup needs. Both a todo and a note satisfy it, which
  * is what lets one implementation decide permissions for either kind of content.
+ *
+ * `group_id` is the group the item lives in; `path` is not needed here because the
+ * group row itself carries it (see `useGroups`).
  */
 export interface ShareableItem {
   user_id: string | null
-  group_name: string | null
+  group_id: string | null
 }
 
 export function useShares() {
   const supabase = useSupabaseClient<Database>()
   const { userId, userEmail } = useCurrentUser()
+  const { groupsById, namePath } = useGroups()
   const toast = useToast()
 
   const myShares = useState<TodoShare[]>('todo-my-shares', () => [])
@@ -67,13 +72,9 @@ export function useShares() {
     }
   }
 
-  function describeScope(groupName: string | null): string {
-    return groupName ? `il gruppo "${groupName}"` : 'l\'intera lista'
-  }
-
   /**
-   * Grants indexed by owner and group, so the permission check for a row is two map
-   * lookups instead of scanning every received share per row per render.
+   * Grants indexed by owner and then by group, so the permission check for a row is a
+   * couple of map lookups instead of scanning every received share per row.
    * `*` stands for a whole-list grant.
    */
   const grantsByOwner = computed<Map<string, Map<string, TodoPermission>>>(() => {
@@ -87,19 +88,22 @@ export function useShares() {
         groups = new Map<string, TodoPermission>()
         map.set(owner, groups)
       }
-      groups.set(share.group_name ?? '*', share.permission)
+      groups.set(share.group_id ?? '*', share.permission)
     }
     return map
   })
 
   /**
-   * What the current user may do with one item — a todo or a note: the sharing is
-   * group-scoped and stored once, so the answer is the same for both.
+   * What the current user may do with one item — a todo or a note.
    *
-   * Received shares are already loaded, so the UI can grey out read-only rows
-   * instead of letting the user try and fail against RLS. `unknown` (shares not
-   * loaded yet, or an item shared some other way) deliberately keeps the actions
-   * enabled — the server stays the authority.
+   * A grant on a group covers its sub-groups, so the answer is the *closest* grant
+   * that covers the item: its own group, then each ancestor, and only then the
+   * whole-list grant. That is the same rule the RLS policy applies (there, "some
+   * grant covers it"); here it is used to grey out read-only rows instead of letting
+   * the user try and fail.
+   *
+   * `unknown` (shares not loaded yet, or an item whose group is not visible any more)
+   * deliberately keeps the actions enabled — the server stays the authority.
    */
   function permissionFor(item: ShareableItem): 'edit' | 'read' | 'unknown' {
     const me = userId.value
@@ -107,19 +111,37 @@ export function useShares() {
     if (!item.user_id || item.user_id === me) return 'edit'
 
     const grants = grantsByOwner.value.get(item.user_id)
-    if (!grants) return 'unknown'
+    if (!grants || grants.size === 0) return 'unknown'
 
-    // A group-specific grant wins over a whole-list grant.
-    const grant = grants.get(item.group_name ?? 'Generale') ?? grants.get('*')
-    if (!grant) return 'read'
+    const group = item.group_id ? groupsById.value.get(item.group_id) : undefined
 
-    return grant === 'edit' ? 'edit' : 'read'
+    if (group) {
+      // path is {root, …, self}: walking it backwards visits the closest first.
+      for (let i = group.path.length - 1; i >= 0; i--) {
+        const grant = grants.get(group.path[i]!)
+        if (grant) return grant === 'edit' ? 'edit' : 'read'
+      }
+    }
+
+    const wholeList = grants.get('*')
+    if (wholeList) return wholeList === 'edit' ? 'edit' : 'read'
+
+    // A group we can no longer see is a revoked grant, not an unknown state.
+    return group ? 'read' : 'unknown'
+  }
+
+  /** Human description of what a grant covers, for the sharing lists. */
+  function describeScope(groupId: string | null): string {
+    if (!groupId) return 'l\'intera lista'
+    const group = groupsById.value.get(groupId)
+    const path = group ? namePath(group.id).join('/') : 'questo gruppo'
+    return `il gruppo "${path}" e i suoi sottogruppi`
   }
 
   async function shareList(
     email: string,
     permission: TodoPermission = 'edit',
-    groupName: string | null = null
+    groupId: string | null = null
   ): Promise<boolean> {
     const id = userId.value
     if (!id) {
@@ -132,7 +154,6 @@ export function useShares() {
     }
 
     const cleanEmail = email.trim().toLowerCase()
-    const group = groupName?.trim() || null
     if (!cleanEmail) return false
 
     if (cleanEmail === userEmail.value) {
@@ -146,12 +167,12 @@ export function useShares() {
 
     // One row per (person, group): the same person can receive several groups.
     const existing = myShares.value.find(
-      s => s.shared_with_email.toLowerCase() === cleanEmail && (s.group_name ?? null) === group
+      share => share.shared_with_email.toLowerCase() === cleanEmail && (share.group_id ?? null) === groupId
     )
     if (existing) {
       toast.add({
         title: 'Già condiviso',
-        description: `${cleanEmail} ha già accesso a ${describeScope(group)}.`,
+        description: `${cleanEmail} ha già accesso a ${describeScope(groupId)}.`,
         color: 'info'
       })
       return false
@@ -164,7 +185,7 @@ export function useShares() {
         .insert({
           owner_id: id,
           shared_with_email: cleanEmail,
-          group_name: group,
+          group_id: groupId,
           permission
         })
         .select()
@@ -187,7 +208,7 @@ export function useShares() {
 
       toast.add({
         title: 'Invito inviato',
-        description: `${cleanEmail} ora può accedere a ${describeScope(group)}.`,
+        description: `${cleanEmail} ora può accedere a ${describeScope(groupId)}.`,
         color: 'success'
       })
       return true
@@ -199,9 +220,33 @@ export function useShares() {
     }
   }
 
+  /** Change what an existing grant allows. */
+  async function updateSharePermission(shareId: number, permission: TodoPermission): Promise<boolean> {
+    const previous = [...myShares.value]
+    myShares.value = myShares.value.map(share => (share.id === shareId ? { ...share, permission } : share))
+
+    const { data, error } = await supabase
+      .from('todo_shares')
+      .update({ permission })
+      .eq('id', shareId)
+      .select('id')
+
+    if (error || !data || data.length === 0) {
+      myShares.value = previous
+      toast.add({
+        title: 'Permesso non aggiornato',
+        description: error?.message ?? 'La condivisione non è più accessibile.',
+        color: 'error'
+      })
+      return false
+    }
+
+    return true
+  }
+
   async function removeShare(shareId: number) {
     const previous = [...myShares.value]
-    myShares.value = myShares.value.filter(s => s.id !== shareId)
+    myShares.value = myShares.value.filter(share => share.id !== shareId)
 
     try {
       const { data, error } = await supabase
@@ -238,7 +283,9 @@ export function useShares() {
     isSharing,
     loadShares,
     shareList,
+    updateSharePermission,
     removeShare,
-    permissionFor
+    permissionFor,
+    describeScope
   }
 }

@@ -1,5 +1,5 @@
 import type { Database } from '~/types/database.types'
-import type { Note } from '~/types/note'
+import type { NoteWithGroup } from '~/types/note'
 import { useShares } from '~/composables/useShares'
 
 export interface NoteStats {
@@ -7,13 +7,16 @@ export interface NoteStats {
   groups: number
 }
 
+/** The columns the list needs from an embedded group. */
+const GROUP_COLUMNS = 'id, name, parent_id, path, depth, tone, icon'
+
 /**
  * Notes.
  *
- * Deliberately the same shape as `useTodos`: a note carries a `group_name` and a
- * `user_id`, so it inherits both the group sharing (the RLS policies on
- * `public.notes` resolve against the same `todo_shares` rows as the todos) and the
- * optimistic-update/refusal handling below.
+ * Deliberately the same shape as `useTodos`: a note lives in a group and carries a
+ * `user_id`, so it inherits both the group sharing (a grant on `Lavoro` covers
+ * `Lavoro/Clienti` for notes exactly as it does for activities — one policy function
+ * decides both) and the optimistic-update/refusal handling below.
  */
 export function useNotes() {
   const supabase = useSupabaseClient<Database>()
@@ -21,7 +24,7 @@ export function useNotes() {
   const { permissionFor } = useShares()
   const toast = useToast()
 
-  const notes = useState<Note[]>('notes-list', () => [])
+  const notes = useState<NoteWithGroup[]>('notes-list', () => [])
   const loading = useState<boolean>('notes-loading', () => false)
   const isSaving = useState<boolean>('notes-is-saving', () => false)
   const activeActionId = useState<number | null>('notes-active-id', () => null)
@@ -29,10 +32,16 @@ export function useNotes() {
   async function loadNotes() {
     loading.value = true
     try {
+      // The embedded group is what the rows display and what permissions are
+      // resolved against; the generated types do not know the relationship yet, so
+      // the result is narrowed here (see `database.types.ts`).
       const { data, error } = await supabase
         .from('notes')
-        .select('*')
-        .order('created_at', { ascending: false })
+        .select(`*, group:groups(${GROUP_COLUMNS})`)
+        .order('created_at', { ascending: false }) as unknown as {
+          data: NoteWithGroup[] | null
+          error: { message: string } | null
+        }
 
       if (error) {
         console.error('Error fetching notes:', error)
@@ -52,13 +61,13 @@ export function useNotes() {
     }
   }
 
-  function patch(id: number, changes: Partial<Note>) {
-    notes.value = notes.value.map(n => (n.id === id ? { ...n, ...changes } : n))
+  function patch(id: number, changes: Partial<NoteWithGroup>) {
+    notes.value = notes.value.map(note => (note.id === id ? { ...note, ...changes } : note))
   }
 
-  function restore(id: number, snapshot: Note | undefined) {
+  function restore(id: number, snapshot: NoteWithGroup | undefined) {
     if (snapshot) {
-      notes.value = notes.value.map(n => (n.id === id ? snapshot : n))
+      notes.value = notes.value.map(note => (note.id === id ? snapshot : note))
     }
   }
 
@@ -74,18 +83,20 @@ export function useNotes() {
     })
   }
 
-  async function addNote(rawTitle: string, rawBody: string, rawGroup: string): Promise<boolean> {
+  async function addNote(
+    rawTitle: string,
+    rawBody: string,
+    groupId: string | null
+  ): Promise<boolean> {
     const title = rawTitle.trim()
     if (!title) return false
-
-    const groupName = rawGroup.trim() || 'Generale'
 
     isSaving.value = true
     try {
       const payload: Database['public']['Tables']['notes']['Insert'] = {
         title,
         body: rawBody,
-        group_name: groupName
+        group_id: groupId
       }
 
       if (userId.value) {
@@ -95,8 +106,11 @@ export function useNotes() {
       const { data, error } = await supabase
         .from('notes')
         .insert(payload)
-        .select()
-        .single()
+        .select(`*, group:groups(${GROUP_COLUMNS})`)
+        .single() as unknown as {
+          data: NoteWithGroup | null
+          error: { message: string } | null
+        }
 
       if (error) {
         toast.add({
@@ -108,14 +122,14 @@ export function useNotes() {
       }
 
       if (data) {
-        notes.value = [data, ...notes.value.filter(n => n.id !== data.id)]
+        notes.value = [data, ...notes.value.filter(note => note.id !== data.id)]
       } else {
         await loadNotes()
       }
 
       toast.add({
         title: 'Nota creata',
-        description: `"${title}" aggiunta in "${groupName}"`,
+        description: `"${title}" aggiunta in "${data?.group_name ?? 'Generale'}"`,
         color: 'success'
       })
       return true
@@ -129,34 +143,29 @@ export function useNotes() {
 
   async function updateNote(
     id: number,
-    changes: { title?: string, body?: string, group_name?: string }
+    changes: { title?: string, body?: string, group_id?: string | null }
   ): Promise<boolean> {
-    const snapshot = notes.value.find(n => n.id === id)
+    const snapshot = notes.value.find(note => note.id === id)
     if (!snapshot) return false
 
     const payload: Database['public']['Tables']['notes']['Update'] = {}
 
     if (changes.title !== undefined) {
       const title = changes.title.trim()
-      if (!title || title === snapshot.title) {
-        // Nothing to do for the title; the other fields may still differ.
-      } else {
+      if (title && title !== snapshot.title) {
         payload.title = title
       }
     }
     if (changes.body !== undefined && changes.body !== snapshot.body) {
       payload.body = changes.body
     }
-    if (changes.group_name !== undefined) {
-      const group = changes.group_name.trim() || 'Generale'
-      if (group !== (snapshot.group_name || 'Generale')) {
-        payload.group_name = group
-      }
+    if (changes.group_id !== undefined && (changes.group_id ?? null) !== (snapshot.group_id ?? null)) {
+      payload.group_id = changes.group_id
     }
 
     if (Object.keys(payload).length === 0) return true
 
-    patch(id, payload as Partial<Note>)
+    patch(id, payload as Partial<NoteWithGroup>)
 
     activeActionId.value = id
     try {
@@ -164,7 +173,10 @@ export function useNotes() {
         .from('notes')
         .update(payload)
         .eq('id', id)
-        .select('id')
+        .select(`*, group:groups(${GROUP_COLUMNS})`) as unknown as {
+          data: NoteWithGroup[] | null
+          error: { message: string } | null
+        }
 
       if (error) {
         restore(id, snapshot)
@@ -182,6 +194,8 @@ export function useNotes() {
         return false
       }
 
+      // The database derives the mirrored name, so take the row it returned.
+      patch(id, data[0]!)
       toast.add({ title: 'Nota aggiornata', color: 'success' })
       return true
     } catch (err: unknown) {
@@ -194,11 +208,11 @@ export function useNotes() {
   }
 
   async function deleteNote(id: number): Promise<boolean> {
-    const target = notes.value.find(n => n.id === id)
+    const target = notes.value.find(note => note.id === id)
     const snapshot = [...notes.value]
 
     activeActionId.value = id
-    notes.value = notes.value.filter(n => n.id !== id)
+    notes.value = notes.value.filter(note => note.id !== id)
 
     try {
       const { data, error } = await supabase
@@ -238,23 +252,40 @@ export function useNotes() {
     }
   }
 
-  function isShared(note: Note): boolean {
+  function isShared(note: NoteWithGroup): boolean {
     const id = userId.value
     if (!id) return false
     return Boolean(note.user_id && note.user_id !== id)
   }
 
   /** Same grant lookup the todo rows use — notes share the group permissions. */
-  function notePermission(note: Note) {
+  function notePermission(note: NoteWithGroup) {
     return permissionFor(note)
   }
 
-  /** How many notes each group holds, for the group cards and filter chips. */
+  /** How many notes each group holds, by group id. */
   const noteCounts = computed<Record<string, number>>(() => {
     const counts: Record<string, number> = {}
     for (const note of notes.value) {
-      const name = (note.group_name || 'Generale').trim() || 'Generale'
-      counts[name] = (counts[name] ?? 0) + 1
+      const id = note.group_id
+      if (!id) continue
+      counts[id] = (counts[id] ?? 0) + 1
+    }
+    return counts
+  })
+
+  /**
+   * The same counts, but a group also carries what its sub-groups hold — that is the
+   * number worth showing on a parent's card.
+   */
+  const noteCountsDeep = computed<Record<string, number>>(() => {
+    const counts: Record<string, number> = {}
+    for (const note of notes.value) {
+      const group = note.group
+      if (!group) continue
+      for (const ancestorId of group.path) {
+        counts[ancestorId] = (counts[ancestorId] ?? 0) + 1
+      }
     }
     return counts
   })
@@ -270,6 +301,7 @@ export function useNotes() {
     isSaving,
     activeActionId,
     noteCounts,
+    noteCountsDeep,
     stats,
     isShared,
     notePermission,

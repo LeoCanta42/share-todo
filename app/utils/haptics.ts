@@ -9,7 +9,10 @@
 export function haptic(pattern: number | number[] = 10): void {
   if (!import.meta.client) return
 
-  const vibrate = (navigator as Navigator & { vibrate?: (value: number | number[]) => boolean }).vibrate
+  // Declared locally rather than read off `Navigator`: the DOM lib types the
+  // parameter as `Iterable<number>` in some versions, which a plain duration is not.
+  type Vibrate = (value: number | number[]) => boolean
+  const vibrate = (navigator as unknown as { vibrate?: Vibrate }).vibrate
   if (typeof vibrate !== 'function') return
 
   try {

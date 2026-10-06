@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import type { Note } from '~/types/note'
+import type { NoteWithGroup } from '~/types/note'
 import type { GroupMeta } from '~/utils/groups'
 import { formatDate } from '~/utils/date'
 
 /**
  * One note card. Mirrors `TodoItem`: clicking the title opens the reading dialog,
- * the group chip navigates to that group's page, and the actions are only offered
- * when the note is not shared with the user in read-only mode.
+ * the group chip opens that group's page, and the actions are only offered when the
+ * note is not shared with the user in read-only mode.
  */
 const props = withDefaults(defineProps<{
-  note: Note
+  note: NoteWithGroup
   groupMeta: GroupMeta
   isPending?: boolean
   isShared?: boolean
@@ -19,8 +19,8 @@ const props = withDefaults(defineProps<{
 })
 
 const emit = defineEmits<{
-  (e: 'openDetail', note: Note): void
-  (e: 'openGroup', group: string): void
+  (e: 'openDetail', note: NoteWithGroup): void
+  (e: 'openGroup', groupId: string): void
   (e: 'delete', id: number): void
 }>()
 
@@ -60,23 +60,22 @@ function openDetail() {
         <span class="todo-title block w-full font-semibold break-words text-slate-800 select-text hover:text-accent-700 dark:text-slate-100 dark:hover:text-accent-300">
           {{ note.title }}
         </span>
-
-        <span
-          v-if="!isEmptyBody"
-          class="mt-1 block line-clamp-2 text-xs whitespace-pre-line text-slate-500 select-text dark:text-slate-400"
-        >{{ preview }}</span>
-        <span v-else class="mt-1 block text-xs text-slate-400 italic dark:text-slate-500">
-          Nota vuota
-        </span>
       </button>
 
-      <div class="mt-2 flex flex-wrap items-center gap-1.5">
+      <p
+        v-if="!isEmptyBody"
+        class="todo-meta mt-1 line-clamp-2 text-slate-500 dark:text-slate-400"
+      >
+        {{ preview }}
+      </p>
+
+      <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
         <button
           type="button"
           class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
           :class="groupMeta.colorClass"
-          :title="`Apri il gruppo ${groupMeta.name}`"
-          @click="emit('openGroup', groupMeta.name)"
+          :title="`Apri il gruppo: ${groupMeta.name}`"
+          @click.stop="note.group_id && emit('openGroup', note.group_id)"
         >
           <UIcon :name="groupMeta.icon" class="h-3 w-3" />
           <span class="todo-meta">{{ groupMeta.name }}</span>
@@ -94,18 +93,18 @@ function openDetail() {
         <span
           v-if="!canEdit"
           class="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400"
-          title="Questa nota è condivisa in sola lettura"
+          title="Questo gruppo è condiviso in sola lettura"
         >
           <UIcon name="i-lucide-lock" class="h-3 w-3" />
           <span class="todo-meta">Sola lettura</span>
         </span>
 
         <span
-          v-if="note.updated_at"
+          v-else-if="note.created_at"
           class="todo-meta inline-flex items-center gap-1 text-slate-400 select-none dark:text-slate-500"
         >
           <UIcon name="i-lucide-clock" class="h-3 w-3" />
-          <span>{{ formatDate(note.updated_at) }}</span>
+          <span>{{ formatDate(note.created_at) }}</span>
         </span>
       </div>
     </div>
@@ -114,15 +113,6 @@ function openDetail() {
       v-if="canEdit"
       class="flex flex-shrink-0 items-center gap-0.5 transition-opacity focus-within:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
     >
-      <button
-        type="button"
-        class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none dark:hover:bg-slate-800 dark:hover:text-slate-200"
-        :aria-label="`Apri ${shortTitle}`"
-        title="Apri e modifica"
-        @click="emit('openDetail', note)"
-      >
-        <UIcon name="i-lucide-pencil" class="h-4 w-4" />
-      </button>
       <button
         type="button"
         class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 focus-visible:ring-2 focus-visible:ring-red-400/40 focus-visible:outline-none dark:hover:bg-red-950/40 dark:hover:text-red-400"

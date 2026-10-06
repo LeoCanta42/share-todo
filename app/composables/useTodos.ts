@@ -1,45 +1,67 @@
 import type { Database } from '~/types/database.types'
-import type { Todo, TodoFilter, TodoScope, TodoStats } from '~/types/todo'
-import { DEFAULT_GROUPS, getGroupMeta, type GroupMeta, type GroupStyle } from '~/utils/groups'
+import type { Todo, TodoFilter, TodoScope, TodoStats, TodoWithGroup, GroupCounts } from '~/types/todo'
 import { usePreferences, type SortOrder } from '~/composables/usePreferences'
+import { useGroups } from '~/composables/useGroups'
 
 export interface TodoSection {
+  /** Group id, or '' for the implicit bucket a row without a group falls into. */
+  groupId: string
   name: string
-  meta: GroupMeta
-  todos: Todo[]
+  todos: TodoWithGroup[]
 }
 
+/** The columns the list needs from an embedded group. */
+const GROUP_COLUMNS = 'id, name, parent_id, path, depth, tone, icon'
+
+function emptyStats(): TodoStats {
+  return { total: 0, active: 0, completed: 0, percentage: 0 }
+}
+
+/**
+ * Activities.
+ *
+ * An activity lives in a group *row* (`group_id`), not in a name: that is what makes
+ * sub-groups possible. Everything the list needs — which group a task belongs to,
+ * what it is called, whether it is inside the selected group's sub-tree, and what the
+ * current user may do with it — is derived from the group's `path`, which the database
+ * keeps as the ancestor chain including the group itself.
+ *
+ * The `group_name` column still travels with each row: it is a display mirror the
+ * database maintains, so a row whose group has become unreadable (a revoked grant)
+ * still shows a label instead of a blank.
+ *
+ * Group *management* (create, rename, move, delete, colours) lives in `useGroups`.
+ */
 export function useTodos() {
   const supabase = useSupabaseClient<Database>()
   const { userId } = useCurrentUser()
-  const {
-    prefs,
-    patch: patchPreferences,
-    addCustomGroup,
-    removeCustomGroup,
-    markGroupRemoved,
-    restoreGroups: restoreGroupPresets,
-    setGroupStyle: persistGroupStyle
-  } = usePreferences()
+  const { prefs } = usePreferences()
+  const { groupsById, namePath } = useGroups()
   const toast = useToast()
 
-  const todos = useState<Todo[]>('todos-list', () => [])
+  const todos = useState<TodoWithGroup[]>('todos-list', () => [])
   const loading = useState<boolean>('todos-loading', () => false)
   const isAdding = useState<boolean>('todos-is-adding', () => false)
   const activeActionId = useState<number | null>('todos-active-id', () => null)
 
   const filter = useState<TodoFilter>('todos-filter', () => 'all')
   const scope = useState<TodoScope>('todos-scope', () => 'all')
-  const selectedGroup = useState<string>('todos-selected-group', () => 'all')
+  /** 'all', or the id of the group being shown (the group page pushes it). */
+  const selectedGroupId = useState<string>('todos-selected-group-id', () => 'all')
   const searchQuery = useState<string>('todos-search', () => '')
 
   async function loadTodos() {
     loading.value = true
     try {
+      // The embedded group carries name, tone and `path`; the generated types do not
+      // know the relationship yet, so the result is narrowed here.
       const { data, error } = await supabase
         .from('todos')
-        .select('*')
-        .order('created_at', { ascending: false })
+        .select(`*, group:groups(${GROUP_COLUMNS})`)
+        .order('created_at', { ascending: false }) as unknown as {
+          data: TodoWithGroup[] | null
+          error: { message: string } | null
+        }
 
       if (error) {
         console.error('Error fetching todos:', error)
@@ -59,13 +81,13 @@ export function useTodos() {
     }
   }
 
-  function patch(id: number, changes: Partial<Todo>) {
-    todos.value = todos.value.map(t => (t.id === id ? { ...t, ...changes } : t))
+  function patch(id: number, changes: Partial<TodoWithGroup>) {
+    todos.value = todos.value.map(todo => (todo.id === id ? { ...todo, ...changes } : todo))
   }
 
-  function restore(id: number, snapshot: Todo | undefined) {
+  function restore(id: number, snapshot: TodoWithGroup | undefined) {
     if (snapshot) {
-      todos.value = todos.value.map(t => (t.id === id ? snapshot : t))
+      todos.value = todos.value.map(todo => (todo.id === id ? snapshot : todo))
     }
   }
 
@@ -82,17 +104,20 @@ export function useTodos() {
     })
   }
 
-  async function addTodo(rawTitle: string, rawGroup?: string): Promise<boolean> {
+  /** Name of the group a row sits in, falling back to the mirrored column. */
+  function groupNameOf(todo: TodoWithGroup): string {
+    return (todo.group?.name || todo.group_name || 'Generale').trim() || 'Generale'
+  }
+
+  async function addTodo(rawTitle: string, groupId?: string | null): Promise<boolean> {
     const title = rawTitle.trim()
     if (!title) return false
-
-    const groupName = rawGroup?.trim() || 'Generale'
 
     isAdding.value = true
     try {
       const payload: Database['public']['Tables']['todos']['Insert'] = {
         title,
-        group_name: groupName,
+        group_id: groupId ?? null,
         completed: false
       }
 
@@ -103,8 +128,11 @@ export function useTodos() {
       const { data, error } = await supabase
         .from('todos')
         .insert(payload)
-        .select()
-        .single()
+        .select(`*, group:groups(${GROUP_COLUMNS})`)
+        .single() as unknown as {
+          data: TodoWithGroup | null
+          error: { message: string } | null
+        }
 
       if (error) {
         toast.add({
@@ -116,14 +144,14 @@ export function useTodos() {
       }
 
       if (data) {
-        todos.value = [data, ...todos.value.filter(t => t.id !== data.id)]
+        todos.value = [data, ...todos.value.filter(todo => todo.id !== data.id)]
       } else {
         await loadTodos()
       }
 
       toast.add({
         title: 'Attività creata',
-        description: `"${title}" aggiunta in "${groupName}"`,
+        description: `"${title}" aggiunta in "${data ? groupNameOf(data) : 'Generale'}"`,
         color: 'success'
       })
       return true
@@ -135,7 +163,7 @@ export function useTodos() {
     }
   }
 
-  async function toggleTodo(todo: Todo) {
+  async function toggleTodo(todo: TodoWithGroup) {
     const snapshot = { ...todo }
     const nextCompleted = !todo.completed
 
@@ -173,7 +201,7 @@ export function useTodos() {
     const trimmed = newTitle.trim()
     if (!trimmed) return
 
-    const snapshot = todos.value.find(t => t.id === id)
+    const snapshot = todos.value.find(todo => todo.id === id)
     if (!snapshot || snapshot.title === trimmed) return
 
     patch(id, { title: trimmed })
@@ -210,20 +238,22 @@ export function useTodos() {
     }
   }
 
-  async function updateTodoGroup(id: number, newGroup: string) {
-    const trimmed = newGroup.trim() || 'Generale'
-    const snapshot = todos.value.find(t => t.id === id)
-    if (!snapshot || (snapshot.group_name || 'Generale') === trimmed) return
+  async function updateTodoGroup(id: number, groupId: string | null) {
+    const snapshot = todos.value.find(todo => todo.id === id)
+    if (!snapshot || (snapshot.group_id ?? null) === (groupId ?? null)) return
 
-    patch(id, { group_name: trimmed })
+    patch(id, { group_id: groupId })
 
     activeActionId.value = id
     try {
       const { data, error } = await supabase
         .from('todos')
-        .update({ group_name: trimmed })
+        .update({ group_id: groupId })
         .eq('id', id)
-        .select('id')
+        .select(`*, group:groups(${GROUP_COLUMNS})`) as unknown as {
+          data: TodoWithGroup[] | null
+          error: { message: string } | null
+        }
 
       if (error) {
         restore(id, snapshot)
@@ -236,9 +266,11 @@ export function useTodos() {
         restore(id, snapshot)
         notPermitted('Spostamento non salvato')
       } else {
+        // Take the row the database returned: it carries the mirrored group name.
+        patch(id, data[0]!)
         toast.add({
           title: 'Gruppo aggiornato',
-          description: `Spostato in "${trimmed}"`,
+          description: `Spostato in "${groupNameOf(data[0]!)}"`,
           color: 'success'
         })
       }
@@ -251,11 +283,11 @@ export function useTodos() {
   }
 
   async function deleteTodo(id: number) {
-    const target = todos.value.find(t => t.id === id)
+    const target = todos.value.find(todo => todo.id === id)
     const snapshot = [...todos.value]
     activeActionId.value = id
 
-    todos.value = todos.value.filter(t => t.id !== id)
+    todos.value = todos.value.filter(todo => todo.id !== id)
 
     try {
       const { data, error } = await supabase
@@ -292,12 +324,12 @@ export function useTodos() {
   async function clearCompleted() {
     // Scoped to the current group on purpose: on a group page "delete completed"
     // must not reach the completed activities of every other group.
-    const completedIds = scopedTodos.value.filter(t => t.completed).map(t => t.id)
+    const completedIds = scopedTodos.value.filter(todo => todo.completed).map(todo => todo.id)
     if (completedIds.length === 0) return
 
     const targetIds = new Set(completedIds)
     const snapshot = [...todos.value]
-    todos.value = todos.value.filter(t => !targetIds.has(t.id))
+    todos.value = todos.value.filter(todo => !targetIds.has(todo.id))
 
     try {
       const { data, error } = await supabase
@@ -338,15 +370,15 @@ export function useTodos() {
     }
   }
 
-  function isShared(todo: Todo): boolean {
+  function isShared(todo: TodoWithGroup): boolean {
     const id = userId.value
     if (!id) return false
     return Boolean(todo.user_id && todo.user_id !== id)
   }
 
-  function countStats(list: Todo[]): TodoStats {
+  function countStats(list: TodoWithGroup[]): TodoStats {
     const total = list.length
-    const completed = list.filter(t => Boolean(t.completed)).length
+    const completed = list.filter(todo => Boolean(todo.completed)).length
     const active = total - completed
     const percentage = total > 0 ? Math.round((completed / total) * 100) : 0
 
@@ -355,262 +387,88 @@ export function useTodos() {
 
   const stats = computed<TodoStats>(() => countStats(todos.value))
 
+  /** True when the activity sits in the selected group or anywhere below it. */
+  function inSelectedGroup(todo: TodoWithGroup): boolean {
+    if (selectedGroupId.value === 'all') return true
+
+    const group = todo.group
+    if (!group) return false
+
+    // `path` is {root, …, self}: the selection is in there when the task is the
+    // selected group itself or one of its descendants.
+    return group.path.includes(selectedGroupId.value)
+  }
+
   /**
-   * The activities the current page is actually about: everything, or just the group
-   * the route is showing (`selectedGroup` is pushed by `/g/:group`).
+   * The activities the current page is actually about: everything, or the selected
+   * group *and its sub-groups* (`selectedGroupId` is pushed by `/g/…`).
    *
    * The filter tabs, the empty state and "delete completed" all read from here
    * rather than from the whole list — otherwise a group page would show global
    * counters, and clearing completed there would delete rows of other groups.
    */
-  const scopedTodos = computed<Todo[]>(() => {
-    if (selectedGroup.value === 'all') return todos.value
-    return todos.value.filter(t => (t.group_name || 'Generale') === selectedGroup.value)
+  const scopedTodos = computed<TodoWithGroup[]>(() => {
+    if (selectedGroupId.value === 'all') return todos.value
+    return todos.value.filter(inSelectedGroup)
   })
 
   const scopedStats = computed<TodoStats>(() => countStats(scopedTodos.value))
 
-  const groupsWithTasks = computed<string[]>(() => {
-    const set = new Set<string>()
-    todos.value.forEach((t) => {
-      const name = (t.group_name || 'Generale').trim()
-      if (name) {
-        set.add(name)
-      }
-    })
-    return Array.from(set)
-  })
-
   /**
-   * Every group the user can file an activity under: the presets (minus the ones
-   * they removed), the groups they created — kept even while empty — and any group
-   * still referenced by an activity.
-   *
-   * A removed preset always comes back if activities still use it (a read-only
-   * shared list cannot be re-homed), so nothing becomes unreachable.
-   *
-   * The array reference is kept stable while the contents are unchanged: this value
-   * is passed to every row, and a fresh array on each mutation would re-render all
-   * of them.
+   * Per-group tallies, by group id: what the group itself holds (`own`) and what its
+   * whole sub-tree holds (`total`). The card of a parent group shows the second.
    */
-  const groupsRef = shallowRef<string[]>([])
+  const groupCounts = computed<Record<string, GroupCounts>>(() => {
+    const counts: Record<string, GroupCounts> = {}
 
-  const availableGroups = computed<string[]>(() => {
-    const set = new Set<string>()
-    const withTasks = new Set(groupsWithTasks.value.map(name => name.toLowerCase()))
-
-    DEFAULT_GROUPS.forEach((group) => {
-      const name = group.name
-      if (!isRemovedGroup(name) || withTasks.has(name.toLowerCase())) {
-        set.add(name)
-      }
-    })
-
-    prefs.value.customGroups.forEach((g) => {
-      const name = g.trim()
-      if (name) set.add(name)
-    })
-
-    groupsWithTasks.value.forEach(name => set.add(name))
-
-    const next = Array.from(set)
-    const previous = groupsRef.value
-    if (previous.length === next.length && previous.every((value, index) => value === next[index])) {
-      return previous
-    }
-    groupsRef.value = next
-    return next
-  })
-
-  /** Groups the user owns and may delete (presets always stay). */
-  const customGroups = computed<string[]>(() => prefs.value.customGroups)
-
-  function styleFor(name: string): GroupStyle | undefined {
-    const styles = prefs.value.groupStyles
-    if (styles[name]) return styles[name]
-    const key = Object.keys(styles).find(k => k.toLowerCase() === name.toLowerCase())
-    return key ? styles[key] : undefined
-  }
-
-  /** Badge colour/icon for a group name, honouring user customisation. */
-  function groupMeta(name?: string | null): GroupMeta {
-    const clean = (name || 'Generale').trim() || 'Generale'
-    return getGroupMeta(clean, styleFor(clean))
-  }
-
-  function isCustomGroup(name: string): boolean {
-    const clean = name.trim().toLowerCase()
-    return customGroups.value.some(g => g.toLowerCase() === clean)
-  }
-
-  function isPresetGroup(name: string): boolean {
-    const clean = name.trim().toLowerCase()
-    return DEFAULT_GROUPS.some(g => g.name.toLowerCase() === clean)
-  }
-
-  /** Preset groups the user removed (restorable from the settings panel). */
-  const removedGroups = computed<string[]>(() => prefs.value.removedGroups ?? [])
-
-  function isRemovedGroup(name: string): boolean {
-    const clean = name.trim().toLowerCase()
-    return removedGroups.value.some(g => g.toLowerCase() === clean)
-  }
-
-  /** "Generale" is the bucket activities without a group fall into. */
-  function isFallbackGroup(name: string): boolean {
-    return name.trim().toLowerCase() === 'generale'
-  }
-
-  function addGroup(name: string, style?: Partial<GroupStyle>): string | null {
-    const clean = name.trim()
-    if (!clean) return null
-    const existing = availableGroups.value.find(g => g.toLowerCase() === clean.toLowerCase())
-    if (existing) {
-      if (style) persistGroupStyle(existing, style)
-      return existing
-    }
-    addCustomGroup(clean)
-    if (style) persistGroupStyle(clean, style)
-    return clean
-  }
-
-  function setGroupStyle(name: string, style: Partial<GroupStyle>) {
-    persistGroupStyle(name.trim(), style)
-  }
-
-  function clearGroupStyle(name: string) {
-    const styles = { ...prefs.value.groupStyles }
-    const key = Object.keys(styles).find(k => k.toLowerCase() === name.trim().toLowerCase())
-    if (key) delete styles[key]
-    patchPreferences({ groupStyles: styles })
-  }
-
-  /**
-   * Delete a group. Its activities are moved to "Generale" first, and a partial
-   * move (read-only shares) rolls back rather than leaving the list inconsistent.
-   *
-   * Presets are not rows in a table — the removal is remembered in the preferences
-   * (and can be undone from the settings panel), while a custom group is dropped
-   * for good.
-   */
-  async function deleteGroup(name: string): Promise<boolean> {
-    const clean = name.trim()
-    if (!clean) return false
-
-    if (isFallbackGroup(clean)) {
-      toast.add({
-        title: 'Gruppo non eliminabile',
-        description: '"Generale" raccoglie le attività senza gruppo: non può essere rimosso.',
-        color: 'warning'
-      })
-      return false
+    const ensure = (id: string): GroupCounts => {
+      counts[id] ??= { own: emptyStats(), total: emptyStats() }
+      return counts[id]!
     }
 
-    const affected = todos.value.filter(
-      t => (t.group_name || 'Generale').toLowerCase() === clean.toLowerCase()
-    )
+    const add = (stats: TodoStats, completed: boolean) => {
+      stats.total++
+      if (completed) stats.completed++
+      else stats.active++
+      stats.percentage = stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 0
+    }
 
-    if (affected.length > 0) {
-      const ids = affected.map(t => t.id)
-      const snapshot = [...todos.value]
-      todos.value = todos.value.map(t => (ids.includes(t.id) ? { ...t, group_name: 'Generale' } : t))
-
-      const { data, error } = await supabase
-        .from('todos')
-        .update({ group_name: 'Generale' })
-        .in('id', ids)
-        .select('id')
-
-      if (error || (data?.length ?? 0) !== ids.length) {
-        todos.value = snapshot
-        toast.add({
-          title: 'Gruppo non eliminato',
-          description: error?.message ?? 'Alcune attività sono condivise in sola lettura.',
-          color: 'error'
-        })
-        return false
+    for (const todo of todos.value) {
+      const group = todo.group
+      if (!group) continue
+      add(ensure(group.id).own, Boolean(todo.completed))
+      // Every ancestor — `path` includes the group itself.
+      for (const ancestorId of group.path) {
+        add(ensure(ancestorId).total, Boolean(todo.completed))
       }
     }
 
-    if (isPresetGroup(clean)) {
-      markGroupRemoved(clean)
-    } else {
-      removeCustomGroup(clean)
-    }
-
-    // Leaving the filter pointed at a group that no longer exists would show an
-    // empty list with no obvious way back.
-    if (selectedGroup.value.toLowerCase() === clean.toLowerCase()) {
-      selectedGroup.value = 'all'
-    }
-
-    toast.add({
-      title: 'Gruppo eliminato',
-      description: affected.length > 0
-        ? `${affected.length} attività spostate in "Generale".`
-        : undefined,
-      color: 'neutral'
-    })
-    return true
-  }
-
-  /** Bring back one removed preset group. */
-  function restoreGroup(name: string): boolean {
-    const clean = name.trim()
-    if (!clean || !isRemovedGroup(clean)) return false
-
-    restoreGroupPresets(clean)
-    toast.add({
-      title: 'Gruppo ripristinato',
-      description: `"${clean}" è di nuovo disponibile.`,
-      color: 'success'
-    })
-    return true
-  }
-
-  /** Bring back every removed preset group at once. */
-  function restoreAllGroups(): number {
-    const removed = removedGroups.value
-    if (removed.length === 0) return 0
-
-    restoreGroupPresets()
-    toast.add({
-      title: 'Gruppi predefiniti ripristinati',
-      description: `${removed.length} gruppi sono tornati disponibili.`,
-      color: 'success'
-    })
-    return removed.length
-  }
-
-  const groupStats = computed<Record<string, { total: number; active: number; completed: number }>>(() => {
-    const counts: Record<string, { total: number; active: number; completed: number }> = {}
-    for (const t of todos.value) {
-      const name = (t.group_name || 'Generale').trim()
-      if (!counts[name]) {
-        counts[name] = { total: 0, active: 0, completed: 0 }
-      }
-      counts[name].total++
-      if (t.completed) {
-        counts[name].completed++
-      } else {
-        counts[name].active++
-      }
-    }
     return counts
   })
 
-  function timestampOf(todo: Todo): number {
+  function timestampOf(todo: TodoWithGroup): number {
     if (!todo.created_at) return 0
     const value = Date.parse(todo.created_at)
     return Number.isNaN(value) ? 0 : value
   }
 
-  /** Group name used for bucketing: "Generale" is the default and sorts first. */
-  function groupKeyOf(todo: Todo): string {
-    return (todo.group_name || 'Generale').trim() || 'Generale'
+  /** Name path of a group — "Lavoro", "Lavoro/Clienti" — for ordering and labels. */
+  function namePathOf(groupId: string): string[] {
+    const group = groupsById.value.get(groupId)
+    return group ? namePath(group.id) : []
   }
 
-  function sortTodos(list: Todo[], order: SortOrder): Todo[] {
+  /** Hierarchical comparison: parents before children, siblings by name. */
+  function compareGroupPaths(a: string[], b: string[]): number {
+    const length = Math.min(a.length, b.length)
+    for (let i = 0; i < length; i++) {
+      const order = a[i]!.localeCompare(b[i]!, 'it', { sensitivity: 'base' })
+      if (order !== 0) return order
+    }
+    return a.length - b.length
+  }
+
+  function sortTodos(list: TodoWithGroup[], order: SortOrder): TodoWithGroup[] {
     const sorted = [...list]
     switch (order) {
       case 'created-asc':
@@ -624,13 +482,26 @@ export function useTodos() {
           Number(Boolean(a.completed)) - Number(Boolean(b.completed))
           || timestampOf(b) - timestampOf(a))
         break
-      case 'group':
-        sorted.sort((a, b) => {
-          const rank = (todo: Todo) => (groupKeyOf(todo).toLowerCase() === 'generale' ? '' : groupKeyOf(todo).toLowerCase())
-          return rank(a).localeCompare(rank(b), 'it', { sensitivity: 'base' })
-            || timestampOf(b) - timestampOf(a)
-        })
+      case 'group': {
+        // The name path is resolved once per group instead of once per comparison,
+        // and compared segment by segment: a flat string comparison would put
+        // "Lavoro2" among the children of "Lavoro".
+        const paths = new Map<string, string[]>()
+        const pathOf = (groupId: string | null): string[] => {
+          const key = groupId ?? ''
+          let path = paths.get(key)
+          if (!path) {
+            path = groupId ? namePathOf(groupId) : []
+            paths.set(key, path)
+          }
+          return path
+        }
+
+        sorted.sort((a, b) =>
+          compareGroupPaths(pathOf(a.group_id), pathOf(b.group_id))
+          || timestampOf(b) - timestampOf(a))
         break
+      }
       default:
         sorted.sort((a, b) => timestampOf(b) - timestampOf(a))
     }
@@ -644,34 +515,34 @@ export function useTodos() {
     const me = userId.value
     if (me) {
       if (scope.value === 'mine') {
-        result = result.filter(t => !t.user_id || t.user_id === me)
+        result = result.filter(todo => !todo.user_id || todo.user_id === me)
       } else if (scope.value === 'shared') {
-        result = result.filter(t => Boolean(t.user_id && t.user_id !== me))
+        result = result.filter(todo => Boolean(todo.user_id && todo.user_id !== me))
       }
     }
 
-    // Group filter
-    if (selectedGroup.value !== 'all') {
-      result = result.filter(t => (t.group_name || 'Generale') === selectedGroup.value)
+    // Group filter — the selected group and everything below it
+    if (selectedGroupId.value !== 'all') {
+      result = result.filter(inSelectedGroup)
     }
 
     // Status filter
     if (filter.value === 'active') {
-      result = result.filter(t => !t.completed)
+      result = result.filter(todo => !todo.completed)
     } else if (filter.value === 'completed') {
-      result = result.filter(t => Boolean(t.completed))
+      result = result.filter(todo => Boolean(todo.completed))
     } else if (prefs.value.hideCompleted) {
       // Only meaningful for the "Tutti" tab: the other tabs already say which
       // half of the list you asked for.
-      result = result.filter(t => !t.completed)
+      result = result.filter(todo => !todo.completed)
     }
 
     // Search query
     const query = searchQuery.value.trim().toLowerCase()
     if (query) {
-      result = result.filter(t =>
-        t.title.toLowerCase().includes(query) ||
-        (t.group_name && t.group_name.toLowerCase().includes(query))
+      result = result.filter(todo =>
+        todo.title.toLowerCase().includes(query)
+        || groupNameOf(todo).toLowerCase().includes(query)
       )
     }
 
@@ -680,21 +551,47 @@ export function useTodos() {
 
   /** Activities split per group, used when the sort order is "group". */
   const groupedTodos = computed<TodoSection[]>(() => {
-    const buckets = new Map<string, Todo[]>()
+    const buckets = new Map<string, TodoWithGroup[]>()
     for (const todo of filteredTodos.value) {
-      const name = groupKeyOf(todo)
-      const bucket = buckets.get(name)
-      if (bucket) {
-        bucket.push(todo)
-      } else {
-        buckets.set(name, [todo])
-      }
+      const key = todo.group_id ?? ''
+      const bucket = buckets.get(key)
+      if (bucket) bucket.push(todo)
+      else buckets.set(key, [todo])
     }
-    return Array.from(buckets.entries()).map(([name, items]) => ({
-      name,
-      meta: groupMeta(name),
+
+    const sections = Array.from(buckets.entries()).map(([groupId, items]) => ({
+      groupId,
+      name: groupId
+        ? (groupsById.value.get(groupId)?.name ?? groupNameOf(items[0]!) )
+        : groupNameOf(items[0]!),
       todos: items
     }))
+
+    sections.sort((a, b) => {
+      if (!a.groupId || !b.groupId) return (a.groupId ? 1 : 0) - (b.groupId ? 1 : 0)
+      return compareGroupPaths(namePathOf(a.groupId), namePathOf(b.groupId))
+    })
+
+    return sections
+  })
+
+  /** The groups that actually hold something, nearest first: for the filter pickers. */
+  const groupsWithTasks = computed<string[]>(() => {
+    const ids = new Set<string>()
+    for (const todo of todos.value) {
+      if (todo.group_id) ids.add(todo.group_id)
+    }
+    return Array.from(ids)
+  })
+
+  /** Number of activities per group, id-keyed (what the notes do for notes). */
+  const todoCounts = computed<Record<string, number>>(() => {
+    const counts: Record<string, number> = {}
+    for (const todo of todos.value) {
+      if (!todo.group_id) continue
+      counts[todo.group_id] = (counts[todo.group_id] ?? 0) + 1
+    }
+    return counts
   })
 
   return {
@@ -704,31 +601,18 @@ export function useTodos() {
     activeActionId,
     filter,
     scope,
-    selectedGroup,
+    selectedGroupId,
     searchQuery,
-    availableGroups,
-    customGroups,
-    removedGroups,
-    groupsWithTasks,
-    groupStats,
-    groupStyles: computed(() => prefs.value.groupStyles),
+    stats,
+    scopedStats,
+    scopedTodos,
     filteredTodos,
     groupedTodos,
-    stats,
-    scopedTodos,
-    scopedStats,
+    groupCounts,
+    todoCounts,
+    groupsWithTasks,
     isShared,
-    groupMeta,
-    isCustomGroup,
-    isPresetGroup,
-    isRemovedGroup,
-    isFallbackGroup,
-    addGroup,
-    setGroupStyle,
-    clearGroupStyle,
-    deleteGroup,
-    restoreGroup,
-    restoreAllGroups,
+    groupNameOf,
     loadTodos,
     addTodo,
     toggleTodo,

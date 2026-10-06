@@ -10,13 +10,14 @@ import { useQuickAdd } from '~/composables/useQuickAdd'
  * starts where the user expects it.
  */
 const { stats } = useNotes()
-const { availableGroups, selectedGroup } = useTodos()
+const { selectedGroupId } = useTodos()
+const { tree } = useGroups()
 const { focusSignal, focusQuickAdd } = useQuickAdd()
 
 const route = useRoute()
 
 // The notes page shows every note regardless of which group page was visited before.
-selectedGroup.value = 'all'
+selectedGroupId.value = 'all'
 
 onMounted(() => {
   // Manifest shortcut: /notes?focus=new focuses the note composer, the same way
@@ -55,7 +56,7 @@ onMounted(() => {
 
     <section aria-label="Aggiungi una nota">
       <QuickAdd
-        :groups="availableGroups"
+        :tree="tree"
         :focus-signal="focusSignal"
         default-mode="note"
       />

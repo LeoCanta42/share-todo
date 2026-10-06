@@ -5,7 +5,7 @@ import { useConfirm } from '~/composables/useConfirm'
 import { usePwa } from '~/composables/usePwa'
 import { useAuth } from '~/composables/useAuth'
 import { MIN_PASSWORD_LENGTH } from '~/utils/password'
-import { GROUP_ICONS, GROUP_TONES } from '~/utils/groups'
+import { DEFAULT_GROUPS, GROUP_ICONS, GROUP_TONES } from '~/utils/groups'
 
 /**
  * Everything the user can tailor: appearance, list behaviour, their own groups
@@ -21,7 +21,9 @@ const emit = defineEmits<{ (e: 'update:open', value: boolean): void }>()
 
 const { prefs, update, reset } = usePreferences()
 const { theme, setTheme, setAccent } = useAppearance()
-const { availableGroups, customGroups, removedGroups, groupStats, groupMeta, isCustomGroup, isFallbackGroup, addGroup, setGroupStyle, clearGroupStyle, deleteGroup, restoreGroup, restoreAllGroups } = useTodos()
+const { groupCounts, loadTodos } = useTodos()
+const { notes, noteCountsDeep, loadNotes } = useNotes()
+const { tree, flat, groups, byId, loadGroups, createGroup, renameGroup, setGroupLook, moveGroup, removeGroup, isOwn, canAddChild } = useGroups()
 const { canInstall, install, needRefresh, updateApp, isIos, offlineReady, isInstalled, manualInstallHint } = usePwa()
 const { changePassword, loading: authLoading } = useAuth()
 const { userEmail } = useCurrentUser()
@@ -94,49 +96,122 @@ const themeOptions = [
   { id: 'system', label: 'Sistema', icon: 'i-lucide-monitor' }
 ]
 
-const groupRows = computed(() => availableGroups.value.map(name => ({
-  name,
-  meta: groupMeta(name),
-  count: groupStats.value[name]?.total ?? 0,
-  active: groupStats.value[name]?.active ?? 0,
-  custom: isCustomGroup(name),
-  fallback: isFallbackGroup(name)
-})))
+/**
+ * The tree, flattened for the list: parents before children, indented by `depth`, and
+ * showing what the whole branch holds (a parent owns what its sub-groups hold).
+ */
+const newGroupParentId = ref<string | null>(null)
+
+const groupRows = computed(() => flat.value.map(node => {
+  const counts = groupCounts.value[node.group.id]
+  return {
+    id: node.group.id,
+    name: node.group.name,
+    meta: groupMetaOf(node.group),
+    depth: node.depth,
+    own: isOwn(node.group),
+    isDefault: node.group.parent_id === null && node.group.name.trim().toLowerCase() === 'generale',
+    count: counts?.total.total ?? 0,
+    active: counts?.total.active ?? 0,
+    notes: noteCountsDeep.value[node.group.id] ?? 0
+  }
+}))
+
+/** Presets the user deleted: they are rows now, so "restore" means re-creating them. */
+const missingPresets = computed(() => {
+  const roots = new Set(
+    groups.value.filter(group => group.parent_id === null).map(group => group.name.toLowerCase())
+  )
+  return DEFAULT_GROUPS.filter(preset => !roots.has(preset.name.toLowerCase()))
+})
+
+/** Groups a row may be moved under: mine, minus itself and its own sub-tree. */
+function moveTargets(id: string) {
+  const current = byId(id)
+  return flat.value.filter(node =>
+    isOwn(node.group)
+    && node.group.id !== id
+    && !(current?.path.includes(node.group.id))
+  )
+}
 
 const installHint = computed(() => {
   if (isInstalled.value) return 'App già installata su questo dispositivo.'
   return manualInstallHint.value
 })
 
-function submitNewGroup() {
-  const name = addGroup(newGroupName.value)
-  if (name) {
-    newGroupName.value = ''
-    expandedGroup.value = name
-    toast.add({ title: 'Gruppo creato', description: `"${name}" è ora disponibile.`, color: 'success' })
-  }
+async function submitNewGroup() {
+  const created = await createGroup({ name: newGroupName.value, parentId: newGroupParentId.value })
+  if (!created) return
+
+  newGroupName.value = ''
+  expandedGroup.value = created.id
+  toast.add({
+    title: 'Gruppo creato',
+    description: newGroupParentId.value
+      ? `"${created.name}" è un sottogruppo di "${byId(newGroupParentId.value)?.name}".`
+      : `"${created.name}" è ora disponibile.`,
+    color: 'success'
+  })
 }
 
-async function requestRemoveGroup(row: { name: string, count: number, custom: boolean }) {
+async function restorePresets() {
+  const missing = missingPresets.value
+  for (const preset of missing) {
+    await createGroup({ name: preset.name, tone: preset.tone, icon: preset.icon })
+  }
+  toast.add({
+    title: 'Gruppi predefiniti ripristinati',
+    description: missing.length === 1
+      ? 'Un gruppo è tornato disponibile.'
+      : `${missing.length} gruppi sono tornati disponibili.`,
+    color: 'success'
+  })
+}
+
+async function requestRemoveGroup(row: { id: string, name: string, count: number }) {
   const confirmed = await ask({
     title: `Eliminare il gruppo "${row.name}"?`,
     description: [
       row.count > 0
         ? `${row.count} attività verranno spostate nel gruppo "Generale".`
         : 'Il gruppo è vuoto.',
-      row.custom
-        ? 'Il gruppo personalizzato verrà rimosso definitivamente.'
-        : 'È un gruppo predefinito: potrai ripristinarlo da questa schermata.'
+      'Anche i suoi sottogruppi verranno eliminati, con le loro attività spostate in "Generale".'
     ].join(' '),
     confirmLabel: 'Elimina gruppo',
     tone: 'danger',
     icon: 'i-lucide-folder-x'
   })
-  if (confirmed) {
-    await deleteGroup(row.name)
-    expandedGroup.value = null
-  }
+  if (!confirmed) return
+
+  const removed = await removeGroup(row.id)
+  expandedGroup.value = null
+  if (!removed) return
+
+  // The database re-homed whatever lived in there, so the lists are re-read.
+  await Promise.all([loadTodos(), loadNotes()])
+  toast.add({ title: 'Gruppo eliminato', color: 'neutral' })
 }
+
+/** Renaming is a one-row change: the database keeps every mirror in step. */
+async function saveRename(id: string, value: string) {
+  const done = await renameGroup(id, value)
+  if (!done) return
+  await Promise.all([loadGroups(), loadTodos(), loadNotes()])
+}
+
+async function changeParent(id: string, parentId: string | null) {
+  const done = await moveGroup(id, parentId)
+  if (!done) return
+  toast.add({ title: 'Gruppo spostato', color: 'success' })
+}
+
+/** Colour and icon now live in the database, so they follow the person. */
+function applyLook(id: string, look: { tone?: string, icon?: string }) {
+  setGroupLook(id, look)
+}
+
+void notes
 
 async function requestReset() {
   const confirmed = await ask({
@@ -309,68 +384,84 @@ async function handleInstall() {
 
       <!-- ---------------------------------------------------------------- -->
       <section v-else-if="tab === 'gruppi'" class="anim-fade space-y-4">
-        <form class="flex items-end gap-2" @submit.prevent="submitNewGroup">
-          <div class="flex-1 space-y-1.5">
-            <label for="new-group" class="block text-xs font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
-              Nuovo gruppo
-            </label>
-            <input
-              id="new-group"
-              v-model="newGroupName"
-              type="text"
-              placeholder="es. Viaggi, Salute…"
-              class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-base text-slate-900 placeholder-slate-400 focus:border-accent-500 focus:ring-2 focus:ring-accent-500/25 focus:outline-none sm:text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+        <form class="space-y-2" @submit.prevent="submitNewGroup">
+          <div class="flex items-end gap-2">
+            <div class="flex-1 space-y-1.5">
+              <label for="new-group" class="block text-xs font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
+                {{ newGroupParentId ? 'Nuovo sottogruppo' : 'Nuovo gruppo' }}
+              </label>
+              <input
+                id="new-group"
+                v-model="newGroupName"
+                type="text"
+                placeholder="es. Viaggi, Salute…"
+                class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-base text-slate-900 placeholder-slate-400 focus:border-accent-500 focus:ring-2 focus:ring-accent-500/25 focus:outline-none sm:text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              >
+            </div>
+            <UButton
+              type="submit"
+              color="primary"
+              size="md"
+              icon="i-lucide-plus"
+              class="rounded-xl font-semibold"
+              :disabled="!newGroupName.trim()"
             >
+              Crea
+            </UButton>
           </div>
-          <UButton
-            type="submit"
-            color="primary"
-            size="md"
-            icon="i-lucide-plus"
-            class="rounded-xl font-semibold"
-            :disabled="!newGroupName.trim()"
-          >
-            Crea
-          </UButton>
+
+          <!-- Where it goes: a sub-group is created *inside* the group you pick -->
+          <GroupSelect
+            v-model="newGroupParentId"
+            :tree="tree"
+            allow-whole-list
+            whole-list-label="Al livello principale"
+            aria-label="Gruppo contenitore"
+          />
+          <p class="todo-meta text-slate-400 dark:text-slate-500">
+            <template v-if="newGroupParentId">
+              Sarà un sottogruppo di «{{ byId(newGroupParentId)?.name }}»
+              <span v-if="!canAddChild(newGroupParentId)"> — ma è già al livello più profondo.</span>
+            </template>
+            <template v-else>
+              Un gruppo al livello principale. Scegli un gruppo qui sopra per creare un sottogruppo.
+            </template>
+          </p>
         </form>
 
         <div class="space-y-2">
-          <!-- Removed presets live only in the preferences, so they can always come back -->
+          <!-- Deleted presets are just deleted rows now: recreate them in one tap -->
           <div
-            v-if="removedGroups.length > 0"
+            v-if="missingPresets.length > 0"
             class="rounded-2xl border border-amber-200/80 bg-amber-50/70 p-3.5 dark:border-amber-900/50 dark:bg-amber-950/20"
           >
             <div class="flex items-start gap-2.5">
               <UIcon name="i-lucide-archive-restore" class="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600 dark:text-amber-400" />
               <div class="min-w-0 flex-1">
                 <p class="text-xs font-bold text-amber-900 dark:text-amber-200">
-                  {{ removedGroups.length === 1 ? '1 gruppo predefinito rimosso' : `${removedGroups.length} gruppi predefiniti rimossi` }}
+                  {{ missingPresets.length === 1 ? '1 gruppo predefinito mancante' : `${missingPresets.length} gruppi predefiniti mancanti` }}
                 </p>
                 <p class="mt-0.5 text-[11px] text-amber-800/80 dark:text-amber-200/70">
-                  Le loro attività sono in "Generale". Puoi rimetterli quando vuoi.
+                  Le loro attività sono in "Generale". Puoi ricrearli quando vuoi.
                 </p>
                 <div class="mt-2 flex flex-wrap items-center gap-1.5">
-                  <button
-                    v-for="name in removedGroups"
-                    :key="name"
-                    type="button"
-                    class="inline-flex items-center gap-1 rounded-lg border border-amber-300/70 bg-white/80 px-2 py-1 text-[11px] font-semibold text-amber-900 transition-colors hover:bg-white focus-visible:ring-2 focus-visible:ring-amber-400/50 focus-visible:outline-none dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-200"
-                    :aria-label="`Ripristina il gruppo ${name}`"
-                    @click="restoreGroup(name)"
+                  <span
+                    v-for="preset in missingPresets"
+                    :key="preset.name"
+                    class="inline-flex items-center gap-1 rounded-lg border border-amber-300/70 bg-white/80 px-2 py-1 text-[11px] font-semibold text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-200"
                   >
-                    <UIcon name="i-lucide-plus" class="h-3 w-3" />
-                    <span>{{ name }}</span>
-                  </button>
+                    <UIcon :name="preset.icon" class="h-3 w-3" />
+                    <span>{{ preset.name }}</span>
+                  </span>
                   <UButton
-                    v-if="removedGroups.length > 1"
                     color="neutral"
                     variant="soft"
                     size="xs"
                     icon="i-lucide-archive-restore"
                     class="rounded-lg"
-                    @click="restoreAllGroups()"
+                    @click="restorePresets()"
                   >
-                    Ripristina tutti
+                    Ripristina
                   </UButton>
                 </div>
               </div>
@@ -379,8 +470,9 @@ async function handleInstall() {
 
           <div
             v-for="row in groupRows"
-            :key="row.name"
+            :key="row.id"
             class="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800"
+            :style="{ marginLeft: `${(row.depth - 1) * 0.75}rem` }"
           >
             <div class="flex items-center gap-2.5 p-3">
               <span
@@ -396,37 +488,70 @@ async function handleInstall() {
                 </p>
                 <p class="todo-meta text-slate-400 dark:text-slate-500">
                   {{ row.count }} attività · {{ row.active }} da fare
-                  <span v-if="row.custom"> · tuo</span>
+                  <template v-if="row.notes > 0"> · {{ row.notes }} note</template>
+                  <template v-if="row.depth > 1"> · sottogruppo</template>
+                  <template v-if="!row.own"> · condiviso con te</template>
                 </p>
               </div>
 
               <button
+                v-if="row.own"
                 type="button"
                 class="flex h-8 items-center gap-1 rounded-lg px-2.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
-                :aria-expanded="expandedGroup === row.name"
-                @click="expandedGroup = expandedGroup === row.name ? null : row.name"
+                :aria-expanded="expandedGroup === row.id"
+                @click="expandedGroup = expandedGroup === row.id ? null : row.id"
               >
-                <UIcon :name="expandedGroup === row.name ? 'i-lucide-chevron-up' : 'i-lucide-palette'" class="h-3.5 w-3.5" />
+                <UIcon :name="expandedGroup === row.id ? 'i-lucide-chevron-up' : 'i-lucide-palette'" class="h-3.5 w-3.5" />
                 <span class="hidden sm:inline">Stile</span>
               </button>
               <UButton
-                  v-if="!row.fallback"
-                  color="error"
-                  variant="ghost"
-                  size="xs"
-                  icon="i-lucide-trash-2"
-                  class="rounded-lg"
-                  @click="requestRemoveGroup(row)"
-                >
-                  Elimina
+                v-if="row.own && !row.isDefault"
+                color="error"
+                variant="ghost"
+                size="xs"
+                icon="i-lucide-trash-2"
+                class="rounded-lg"
+                @click="requestRemoveGroup(row)"
+              >
+                Elimina
               </UButton>
             </div>
 
-            <!-- Inline style editor -->
+            <!-- Inline editor: name, position in the tree, then the look -->
             <div
-              v-if="expandedGroup === row.name"
+              v-if="expandedGroup === row.id && row.own"
               class="anim-fade space-y-3 border-t border-slate-100 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-900/40"
             >
+              <div class="space-y-1.5">
+                <p class="text-[11px] font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
+                  Nome
+                </p>
+                <input
+                  :value="row.name"
+                  type="text"
+                  class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:border-accent-500 focus:ring-2 focus:ring-accent-500/25 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  :aria-label="`Nome del gruppo ${row.name}`"
+                  @change="saveRename(row.id, ($event.target as HTMLInputElement).value)"
+                >
+              </div>
+
+              <div class="space-y-1.5">
+                <p class="text-[11px] font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
+                  Posizione
+                </p>
+                <select
+                  :value="byId(row.id)?.parent_id ?? ''"
+                  class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-accent-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  :aria-label="`Gruppo contenitore di ${row.name}`"
+                  @change="changeParent(row.id, ($event.target as HTMLSelectElement).value || null)"
+                >
+                  <option value="">Al livello principale</option>
+                  <option v-for="target in moveTargets(row.id)" :key="target.group.id" :value="target.group.id">
+                    {{ '—'.repeat(Math.max(0, target.depth - 1)) }}{{ target.depth > 1 ? ' ' : '' }}{{ target.group.name }}
+                  </option>
+                </select>
+              </div>
+
               <div class="space-y-1.5">
                 <p class="text-[11px] font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
                   Colore
@@ -440,7 +565,7 @@ async function handleInstall() {
                     :class="tone.swatch"
                     :aria-label="`Colore ${tone.label}`"
                     :title="tone.label"
-                    @click="setGroupStyle(row.name, { tone: tone.id, icon: row.meta.icon })"
+                    @click="applyLook(row.id, { tone: tone.id, icon: row.meta.icon })"
                   />
                 </div>
               </div>
@@ -460,7 +585,7 @@ async function handleInstall() {
                       : 'border-slate-200 dark:border-slate-700'"
                     :aria-label="`Icona ${icon.split('-').pop()}`"
                     :aria-pressed="row.meta.icon === icon"
-                    @click="setGroupStyle(row.name, { tone: row.meta.tone, icon })"
+                    @click="applyLook(row.id, { tone: row.meta.tone, icon })"
                   >
                     <UIcon :name="icon" class="h-4 w-4" />
                   </button>
@@ -474,18 +599,21 @@ async function handleInstall() {
                   size="xs"
                   icon="i-lucide-rotate-ccw"
                   class="rounded-lg"
-                  @click="clearGroupStyle(row.name)"
+                  @click="applyLook(row.id, { tone: 'slate', icon: 'i-lucide-folder' })"
                 >
                   Ripristina stile
                 </UButton>
+                <span class="todo-meta text-slate-400 dark:text-slate-500">
+                  Il colore segue il tuo account, su ogni dispositivo.
+                </span>
               </div>
             </div>
           </div>
         </div>
 
         <p class="todo-meta text-slate-400 dark:text-slate-500">
-          I gruppi che crei restano disponibili anche quando non contengono attività. Anche i gruppi
-          predefiniti si possono eliminare: le loro attività tornano in "Generale".
+          I gruppi che crei restano disponibili anche quando non contengono attività, e possono contenere
+          sottogruppi. Chi riceve un gruppo in condivisione vede anche i suoi sottogruppi.
         </p>
       </section>
 

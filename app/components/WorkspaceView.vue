@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { useTodos } from '~/composables/useTodos'
-import { useShares } from '~/composables/useShares'
+import { useGroups } from '~/composables/useGroups'
 import { useConfirm } from '~/composables/useConfirm'
 import { usePreferences } from '~/composables/usePreferences'
 import { useQuickAdd } from '~/composables/useQuickAdd'
-import type { Todo } from '~/types/todo'
+import type { TodoWithGroup } from '~/types/todo'
 
 /**
  * The activity machinery shared by the overview and a group page: quick add,
@@ -17,10 +17,8 @@ import type { Todo } from '~/types/todo'
 const {
   todos,
   scopedStats,
-  selectedGroup,
-  availableGroups,
-  groupMeta,
-  isShared,
+  selectedGroupId,
+  groupNameOf,
   toggleTodo,
   updateTodoTitle,
   updateTodoGroup,
@@ -31,7 +29,7 @@ const {
   searchQuery
 } = useTodos()
 
-const { permissionFor } = useShares()
+const { tree, namePath } = useGroups()
 const { ask } = useConfirm()
 const { prefs } = usePreferences()
 const { focusSignal, focusQuickAdd } = useQuickAdd()
@@ -40,21 +38,29 @@ const isDetailOpen = ref(false)
 const detailId = ref<number | null>(null)
 
 /** Derived so the open dialog always shows the latest version of the activity. */
-const detailTodo = computed<Todo | null>(
-  () => todos.value.find(t => t.id === detailId.value) ?? null
+const detailTodo = computed<TodoWithGroup | null>(
+  () => todos.value.find(todo => todo.id === detailId.value) ?? null
 )
 
-const detailMeta = computed(() => groupMeta(detailTodo.value?.group_name))
-const detailEditable = computed(() => (detailTodo.value ? permissionFor(detailTodo.value) !== 'read' : true))
+/**
+ * Where a new activity goes when nothing else is chosen: the group being viewed,
+ * or "Generale" — the bucket every account has.
+ */
+const defaultGroupId = computed<string | null>(() => {
+  if (selectedGroupId.value !== 'all') return selectedGroupId.value
+  const root = tree.value.find(node => node.group.parent_id === null
+    && node.group.name.trim().toLowerCase() === 'generale')
+  return root?.group.id ?? null
+})
 
-function openDetail(todo: Todo) {
+function openDetail(todo: TodoWithGroup) {
   detailId.value = todo.id
   isDetailOpen.value = true
 }
 
-/** A group chip now opens that group's page instead of filtering in place. */
-function openGroup(name: string) {
-  navigateTo({ name: 'g-group', params: { group: name } })
+/** A group chip walks *into* that group's page, at any depth. */
+function openGroup(groupId: string) {
+  navigateTo({ name: 'g-group', params: { group: namePath(groupId) } })
 }
 
 function shorten(text: string, max = 140): string {
@@ -63,7 +69,7 @@ function shorten(text: string, max = 140): string {
 }
 
 async function handleDelete(id: number) {
-  const todo = todos.value.find(t => t.id === id)
+  const todo = todos.value.find(item => item.id === id)
 
   if (prefs.value.confirmDelete) {
     const confirmed = await ask({
@@ -100,15 +106,15 @@ async function handleClearCompleted() {
   await clearCompleted()
 }
 
-function handleDetailSave(payload: { id: number, title: string, group: string }) {
-  const todo = todos.value.find(t => t.id === payload.id)
+function handleDetailSave(payload: { id: number, title: string, groupId: string | null }) {
+  const todo = todos.value.find(item => item.id === payload.id)
   if (!todo) return
 
   if (payload.title !== todo.title) {
     updateTodoTitle(payload.id, payload.title)
   }
-  if (payload.group !== (todo.group_name || 'Generale')) {
-    updateTodoGroup(payload.id, payload.group)
+  if ((payload.groupId ?? null) !== (todo.group_id ?? null)) {
+    updateTodoGroup(payload.id, payload.groupId)
   }
 }
 
@@ -121,16 +127,14 @@ function clearFilters() {
   scope.value = 'all'
   searchQuery.value = ''
 }
-
-const addDefaultGroup = computed(() => (selectedGroup.value !== 'all' ? selectedGroup.value : 'Generale'))
 </script>
 
 <template>
   <div class="space-y-4 sm:space-y-5">
     <section aria-label="Aggiungi attività o nota">
       <QuickAdd
-        :groups="availableGroups"
-        :default-group="addDefaultGroup"
+        :tree="tree"
+        :default-group-id="defaultGroupId"
         :focus-signal="focusSignal"
       />
     </section>
@@ -156,11 +160,7 @@ const addDefaultGroup = computed(() => (selectedGroup.value !== 'all' ? selected
       v-if="detailTodo"
       v-model:open="isDetailOpen"
       :todo="detailTodo"
-      :groups="availableGroups"
-      :is-shared="isShared(detailTodo)"
-      :can-edit="detailEditable"
-      :group-icon="detailMeta.icon"
-      :group-color-class="detailMeta.colorClass"
+      :tree="tree"
       @toggle="toggleTodo"
       @save="handleDetailSave"
       @delete="handleDelete"

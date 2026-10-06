@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { composeShareDraft, useShareTarget } from '~/composables/useShareTarget'
-import { useTodos } from '~/composables/useTodos'
+import { useGroups } from '~/composables/useGroups'
 import { useQuickAdd } from '~/composables/useQuickAdd'
 
 /**
@@ -14,7 +14,7 @@ import { useQuickAdd } from '~/composables/useQuickAdd'
  * note, save.
  */
 const { content, clear } = useShareTarget()
-const { availableGroups } = useTodos()
+const { tree } = useGroups()
 const { focusSignal, focusQuickAdd } = useQuickAdd()
 
 const draft = computed(() => composeShareDraft(content.value))
@@ -84,7 +84,7 @@ useSeoMeta({
 
     <section aria-label="Salva il contenuto condiviso">
       <QuickAdd
-        :groups="availableGroups"
+        :tree="tree"
         :focus-signal="focusSignal"
         :initial-title="draft"
         @created="handleCreated"

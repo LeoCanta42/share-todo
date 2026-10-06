@@ -9,6 +9,7 @@ import { usePwa } from '~/composables/usePwa'
 import { useQuickAdd } from '~/composables/useQuickAdd'
 import { useShareDialog } from '~/composables/useShareDialog'
 import { useAppBadge } from '~/composables/useAppBadge'
+import { useGroups } from '~/composables/useGroups'
 import { appleSplashLinks } from '~/utils/appleSplash'
 
 useSeoMeta({
@@ -23,6 +24,7 @@ const { user, logout } = useAuth()
 const { myShares, loadShares } = useShares()
 const { todos, stats, loadTodos } = useTodos()
 const { notes, loadNotes } = useNotes()
+const { groups, loadGroups, migrateLegacyGroupPrefs } = useGroups()
 const { status: approvalStatus, isAdmin, isApproved, loadProfile, resetProfile } = useProfile()
 const { needRefresh, offlineReady, updateApp } = usePwa()
 const { focusQuickAdd } = useQuickAdd()
@@ -74,6 +76,7 @@ watch(user, async (currentUser) => {
     todos.value = []
     notes.value = []
     myShares.value = []
+    groups.value = []
     resetProfile()
     isShareModalOpen.value = false
     isSettingsModalOpen.value = false
@@ -86,6 +89,11 @@ watch(user, async (currentUser) => {
   await loadProfile()
 
   if (isApproved.value) {
+    // The tree first: the activities and notes embed their group, so loading it
+    // first means the first paint of the list already has the names and the colours.
+    await loadGroups()
+    // Groups used to live in a per-device cookie: this hands them over once.
+    await migrateLegacyGroupPrefs()
     loadTodos()
     loadNotes()
     loadShares()

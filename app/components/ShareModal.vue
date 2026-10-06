@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { useShares } from '~/composables/useShares'
-import { useConfirm } from '~/composables/useConfirm'
-import { formatShortDate } from '~/utils/date'
+import { useGroups } from '~/composables/useGroups'
+import { groupMetaOf } from '~/utils/groups'
 
 /**
- * Sharing panel.
+ * Sharing, by group.
  *
- * Rebuilt on AppModal, and now also lists the lists *shared with you* — the
- * composable already fetched them, but nothing ever displayed them.
+ * A grant names a group and covers its sub-groups, so the picker offers the tree and
+ * says so in words — "il gruppo «Lavoro» e i suoi sottogruppi" — because "share this
+ * group" meaning "and everything under it" is exactly the kind of thing that has to
+ * be visible before the button is pressed.
  */
 const props = withDefaults(defineProps<{
   open: boolean
-  /** Group to preselect — the group page's share button passes its own name. */
+  /** Pre-select this group (the group page hands its own id). */
   initialGroup?: string | null
 }>(), {
   initialGroup: null
@@ -19,53 +21,48 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{ (e: 'update:open', value: boolean): void }>()
 
-const { myShares, receivedShares, isSharing, shareList, removeShare } = useShares()
-const { availableGroups, groupMeta } = useTodos()
-const { ask } = useConfirm()
+const { tree, groupsById, loadGroups } = useGroups()
+const {
+  myShares,
+  receivedShares,
+  loading,
+  isSharing,
+  loadShares,
+  shareList,
+  updateSharePermission,
+  removeShare,
+  describeScope
+} = useShares()
 
-/** Sentinel for the <select>: the database stores "whole list" as NULL. */
-const ALL_GROUPS = '__all__'
+const email = ref('')
+const permission = ref<'read' | 'edit'>('edit')
+const groupId = ref<string | null>(null)
 
-const inviteEmail = ref('')
-const invitePermission = ref<'edit' | 'read'>('edit')
-const inviteGroup = ref<string>(ALL_GROUPS)
-
-// The dialog lives in shared state, so it has to follow whichever caller opened it:
-// the navbar opens it scoped to the whole list, a group page scoped to that group.
-watch([() => props.open, () => props.initialGroup], ([open, group]) => {
+watch(() => props.open, async (open) => {
   if (!open) return
-  inviteGroup.value = group && group !== 'all' ? group : ALL_GROUPS
+  groupId.value = props.initialGroup ?? null
+  email.value = ''
+  permission.value = 'edit'
+  if (groupsById.value.size === 0) await loadGroups()
+  await loadShares()
+}, { immediate: true })
+
+watch(() => props.initialGroup, (value) => {
+  if (props.open) groupId.value = value ?? null
 })
 
-const permissionOptions = [
-  { id: 'edit', label: 'Puo modificare', icon: 'i-lucide-pencil' },
-  { id: 'read', label: 'Sola lettura', icon: 'i-lucide-eye' }
-]
+const selectedMeta = computed(() => groupMetaOf(groupId.value ? groupsById.value.get(groupId.value) : null, 'Generale'))
 
-async function handleShare() {
-  const trimmed = inviteEmail.value.trim()
-  if (!trimmed || isSharing.value) return
+const canSubmit = computed(() => email.value.trim().includes('@') && !isSharing.value)
 
-  const success = await shareList(
-    trimmed,
-    invitePermission.value,
-    inviteGroup.value === ALL_GROUPS ? null : inviteGroup.value
-  )
-  if (success) inviteEmail.value = ''
+async function submit() {
+  if (!canSubmit.value) return
+  const done = await shareList(email.value, permission.value, groupId.value)
+  if (done) email.value = ''
 }
 
-async function handleRemove(shareId: number, email: string) {
-  const confirmed = await ask({
-    title: `Revocare l'accesso a ${email}?`,
-    description: 'Potrà ancora vedere le attività già caricate fino all\'aggiornamento della pagina, ma non avrà più accesso.',
-    confirmLabel: 'Revoca accesso',
-    tone: 'danger',
-    icon: 'i-lucide-user-minus'
-  })
-  if (confirmed) {
-    await removeShare(shareId)
-  }
-}
+/** Who shared what with me — read-only list, so it is clear where access comes from. */
+const received = computed(() => receivedShares.value.filter(share => share.owner_id))
 </script>
 
 <template>
@@ -73,138 +70,138 @@ async function handleRemove(shareId: number, email: string) {
     :open="open"
     size="lg"
     icon="i-lucide-share-2"
-    title="Condividi le tue attività"
-    subtitle="Invita una persona su un gruppo o sull'intera lista"
+    title="Condividi"
+    subtitle="Chi riceve un gruppo vede anche i suoi sottogruppi."
     @update:open="(value) => emit('update:open', value)"
   >
     <div class="space-y-5">
-      <form class="space-y-3" @submit.prevent="handleShare">
-        <div class="space-y-1.5">
-          <label for="share-email" class="block text-xs font-semibold text-slate-700 dark:text-slate-300">
-            Email del collaboratore
-          </label>
+      <!-- What to share -->
+      <section class="space-y-2">
+        <label class="todo-meta font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
+          Cosa condividere
+        </label>
+        <GroupSelect
+          v-model="groupId"
+          :tree="tree"
+          allow-whole-list
+          whole-list-label="Tutta la lista"
+          aria-label="Gruppo da condividere"
+        />
+        <p class="todo-meta flex items-start gap-1.5 text-slate-500 dark:text-slate-400">
+          <UIcon :name="selectedMeta.icon" class="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+          <span>Stai condividendo {{ describeScope(groupId) }}.</span>
+        </p>
+      </section>
+
+      <!-- Invite -->
+      <section class="space-y-2">
+        <label class="todo-meta font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
+          Invita una persona
+        </label>
+        <div class="flex flex-col gap-2 sm:flex-row">
           <input
-            id="share-email"
-            v-model="inviteEmail"
+            v-model="email"
             type="email"
-            required
-            placeholder="collega@esempio.com"
-            class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-base text-slate-900 placeholder-slate-400 focus:border-accent-500 focus:ring-2 focus:ring-accent-500/25 focus:outline-none sm:text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+            placeholder="nome@esempio.com"
+            class="min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:border-accent-500 focus:ring-2 focus:ring-accent-500/25 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            aria-label="Email della persona da invitare"
+            @keydown.enter.prevent="submit"
           >
-        </div>
-
-        <div class="space-y-1.5">
-          <label for="share-group" class="block text-xs font-semibold text-slate-700 dark:text-slate-300">
-            Cosa condividere
-          </label>
-          <select
-            id="share-group"
-            v-model="inviteGroup"
-            class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-base text-slate-800 focus:border-accent-500 focus:outline-none sm:text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-          >
-            <option :value="ALL_GROUPS">Tutte le liste</option>
-            <option v-for="group in availableGroups" :key="group" :value="group">
-              {{ group }}
-            </option>
-          </select>
-        </div>
-
-        <div class="space-y-1.5">
-          <span class="block text-xs font-semibold text-slate-700 dark:text-slate-300">Permesso</span>
           <SegmentedControl
-            v-model="invitePermission"
-            :options="permissionOptions"
+            v-model="permission"
+            :options="[{ id: 'edit', label: 'Può modificare' }, { id: 'read', label: 'Solo lettura' }]"
             aria-label="Permesso"
-            size="md"
-            wrap
           />
+          <UButton
+            color="primary"
+            size="md"
+            icon="i-lucide-send"
+            class="rounded-xl font-semibold"
+            :disabled="!canSubmit"
+            :loading="isSharing"
+            @click="submit"
+          >
+            Invita
+          </UButton>
+        </div>
+      </section>
+
+      <!-- Grants I handed out -->
+      <section class="space-y-2">
+        <div class="flex items-center gap-2">
+          <h3 class="todo-meta font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
+            Persone con accesso
+          </h3>
+          <span class="h-px flex-1 bg-slate-100 dark:bg-slate-800" />
+          <span class="todo-meta text-slate-400 dark:text-slate-500">{{ myShares.length }}</span>
         </div>
 
-        <UButton
-          type="submit"
-          block
-          size="md"
-          color="primary"
-          :loading="isSharing"
-          :disabled="!inviteEmail.trim() || isSharing"
-          icon="i-lucide-user-plus"
-          class="rounded-xl font-semibold"
-        >
-          Invia invito
-        </UButton>
-      </form>
-
-      <!-- People with access -->
-      <div class="space-y-2 border-t border-slate-100 pt-4 dark:border-slate-800">
-        <h3 class="text-[11px] font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
-          Persone con accesso ({{ myShares.length }})
-        </h3>
-
-        <p v-if="myShares.length === 0" class="rounded-xl bg-slate-50 py-4 text-center text-xs text-slate-400 dark:bg-slate-800/40">
-          Nessun collaboratore ancora invitato.
+        <p v-if="loading && myShares.length === 0" class="todo-meta text-slate-400">
+          Caricamento…
+        </p>
+        <p v-else-if="myShares.length === 0" class="todo-meta text-slate-400 dark:text-slate-500">
+          Non hai ancora condiviso nulla: le tue attività sono solo tue.
         </p>
 
         <ul v-else class="space-y-1.5">
           <li
             v-for="share in myShares"
             :key="share.id"
-            class="flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50 p-2.5 text-xs dark:border-slate-800 dark:bg-slate-800/60"
+            class="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200/80 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-900"
           >
-            <div class="flex min-w-0 items-center gap-2">
-              <span class="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-accent-500/10 text-[11px] font-bold text-accent-700 dark:text-accent-300">
-                {{ share.shared_with_email.charAt(0).toUpperCase() }}
-              </span>
-              <div class="min-w-0">
-                <p class="truncate font-medium text-slate-900 dark:text-white">
-                  {{ share.shared_with_email }}
-                </p>
-                <p class="todo-meta mt-0.5 flex items-center gap-1 text-slate-400">
-                  <UIcon :name="share.group_name ? groupMeta(share.group_name).icon : 'i-lucide-layers'" class="h-3 w-3 flex-shrink-0" />
-                  <span>{{ share.group_name || 'Tutte le liste' }}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>{{ share.permission === 'edit' ? 'Puo modificare' : 'Sola lettura' }}</span>
-                  <span v-if="share.created_at" aria-hidden="true">·</span>
-                  <span v-if="share.created_at">{{ formatShortDate(share.created_at) }}</span>
-                </p>
-              </div>
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-xs font-semibold text-slate-800 dark:text-slate-100">
+                {{ share.shared_with_email }}
+              </p>
+              <p class="todo-meta text-slate-400 dark:text-slate-500">
+                {{ describeScope(share.group_id) }}
+              </p>
             </div>
+
+            <SegmentedControl
+              :model-value="share.permission"
+              :options="[{ id: 'edit', label: 'Modifica' }, { id: 'read', label: 'Lettura' }]"
+              :aria-label="`Permesso per ${share.shared_with_email}`"
+              @update:model-value="(value) => updateSharePermission(share.id, value as 'read' | 'edit')"
+            />
 
             <button
               type="button"
-              class="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 focus-visible:ring-2 focus-visible:ring-red-400/40 focus-visible:outline-none dark:hover:bg-red-950/40 dark:hover:text-red-400"
+              class="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 focus-visible:ring-2 focus-visible:ring-red-400/40 focus-visible:outline-none dark:hover:bg-red-950/40 dark:hover:text-red-400"
               :aria-label="`Revoca l'accesso a ${share.shared_with_email}`"
-              title="Revoca accesso"
-              @click="handleRemove(share.id, share.shared_with_email)"
+              title="Revoca"
+              @click="removeShare(share.id)"
             >
               <UIcon name="i-lucide-user-minus" class="h-4 w-4" />
             </button>
           </li>
         </ul>
-      </div>
+      </section>
 
-      <!-- Shared with me -->
-      <div v-if="receivedShares.length > 0" class="space-y-2 border-t border-slate-100 pt-4 dark:border-slate-800">
-        <h3 class="text-[11px] font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
-          Condivisi con te ({{ receivedShares.length }})
-        </h3>
-        <ul class="space-y-1.5">
+      <!-- What was shared with me -->
+      <section v-if="received.length" class="space-y-2">
+        <div class="flex items-center gap-2">
+          <h3 class="todo-meta font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
+            Condiviso con te
+          </h3>
+          <span class="h-px flex-1 bg-slate-100 dark:bg-slate-800" />
+        </div>
+        <ul class="space-y-1">
           <li
-            v-for="share in receivedShares"
+            v-for="share in received"
             :key="share.id"
-            class="flex items-center gap-2 rounded-xl border border-sky-100 bg-sky-50/60 p-2.5 text-xs dark:border-sky-950 dark:bg-sky-950/30"
+            class="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2 dark:bg-slate-800/50"
           >
-            <UIcon name="i-lucide-inbox" class="h-4 w-4 flex-shrink-0 text-sky-600 dark:text-sky-400" />
-            <div class="min-w-0">
-              <p class="truncate font-medium text-slate-900 dark:text-white">
-                {{ share.group_name || 'Intera lista' }}
-              </p>
-              <p class="todo-meta text-slate-500 dark:text-slate-400">
-                {{ share.permission === 'edit' ? 'Puo modificare' : 'Sola lettura' }}
-              </p>
-            </div>
+            <UIcon name="i-lucide-users" class="h-3.5 w-3.5 flex-shrink-0 text-sky-500" />
+            <span class="min-w-0 flex-1 truncate text-xs text-slate-600 dark:text-slate-300">
+              {{ describeScope(share.group_id) }}
+            </span>
+            <span class="todo-meta rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+              {{ share.permission === 'edit' ? 'Modifica' : 'Lettura' }}
+            </span>
           </li>
         </ul>
-      </div>
+      </section>
     </div>
   </AppModal>
 </template>

@@ -1,21 +1,24 @@
 <script setup lang="ts">
 import { useNotes } from '~/composables/useNotes'
-import { useTodos } from '~/composables/useTodos'
+import { useGroups } from '~/composables/useGroups'
+import { groupMetaOf } from '~/utils/groups'
+import type { GroupNode } from '~/types/group'
 
 /**
- * Note composer: a title plus a free multi-line body.
+ * Note composer: a title, a group and a free multi-line body.
  *
  * Plain text on purpose — the body is stored as-is and rendered with
  * `whitespace-pre-wrap` in the reading dialog, so whatever is typed is what is shown.
  */
 const props = withDefaults(defineProps<{
-  groups: string[]
-  defaultGroup?: string
+  /** The group tree, as `useGroups().tree` returns it. */
+  tree: GroupNode[]
+  defaultGroupId?: string | null
   focusSignal?: number
   /** Text to start from — set by the share page, empty everywhere else. */
   initialTitle?: string
 }>(), {
-  defaultGroup: 'Generale'
+  defaultGroupId: null
 })
 
 const emit = defineEmits<{
@@ -23,46 +26,48 @@ const emit = defineEmits<{
 }>()
 
 const { addNote, isSaving } = useNotes()
-const { groupMeta } = useTodos()
+const { flat, createGroup, canAddChild } = useGroups()
 
 const title = ref((props.initialTitle ?? '').trim())
 const body = ref('')
-const group = ref(props.defaultGroup || 'Generale')
+const groupId = ref<string | null>(props.defaultGroupId ?? null)
 const titleRef = ref<HTMLInputElement | null>(null)
+const newGroupName = ref('')
 
-watch(() => props.defaultGroup, (value) => {
-  if (value && value !== 'all') {
-    group.value = value
-  }
+const selected = computed(() => flat.value.find(node => node.group.id === groupId.value) ?? null)
+const selectedMeta = computed(() => groupMetaOf(selected.value?.group, 'Generale'))
+
+const activeGroupMeta = computed(() => selectedMeta.value)
+const charCount = computed(() => body.value.trim().length)
+const canSubmit = computed(() => title.value.trim().length > 0 && !isSaving.value)
+
+const canCreateUnderSelection = computed(() =>
+  groupId.value ? canAddChild(groupId.value) : true
+)
+
+watch(() => props.defaultGroupId, (value) => {
+  if (value) groupId.value = value
 })
 
 watch(() => props.focusSignal, () => {
   titleRef.value?.focus()
 })
 
-const activeGroupMeta = computed(() => groupMeta(group.value))
-const charCount = computed(() => body.value.trim().length)
-const canSubmit = computed(() => title.value.trim().length > 0 && !isSaving.value)
-
-/**
- * `availableGroups` does not know about a group that only holds notes, so the
- * preselected group is appended when missing. Without it the `<select>` would have no
- * option matching the value it holds: the browser would paint one group while the
- * form submitted another.
- */
-const groupOptions = computed(() => {
-  const list = [...props.groups]
-  const current = group.value
-  if (current && !list.some(g => g.toLowerCase() === current.toLowerCase())) {
-    list.push(current)
-  }
-  return list
-})
+/** A note can open its own sub-group, the same way an activity can. */
+async function createSubGroup() {
+  const name = newGroupName.value.trim()
+  if (!name) return
+  const parentId = groupId.value && canCreateUnderSelection.value ? groupId.value : null
+  const created = await createGroup({ name, parentId })
+  if (!created) return
+  newGroupName.value = ''
+  groupId.value = created.id
+}
 
 async function submit() {
   if (!canSubmit.value) return
 
-  const created = await addNote(title.value, body.value, group.value)
+  const created = await addNote(title.value, body.value, groupId.value)
   if (created) {
     emit('created')
     title.value = ''
@@ -83,52 +88,60 @@ async function submit() {
         v-model="title"
         type="text"
         placeholder="Titolo della nota"
-        class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-base font-semibold text-slate-900 placeholder-slate-400 focus:border-accent-500 focus:ring-2 focus:ring-accent-500/25 focus:outline-none sm:text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+        class="w-full rounded-xl border-0 bg-transparent px-1 py-1.5 text-base font-semibold text-slate-900 placeholder-slate-400 focus:ring-0 focus:outline-none dark:text-white"
         aria-label="Titolo della nota"
-        :disabled="isSaving"
       >
-
       <textarea
         v-model="body"
-        rows="4"
-        placeholder="Scrivi qui la nota…"
-        class="w-full resize-y rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-base leading-relaxed text-slate-800 placeholder-slate-400 focus:border-accent-500 focus:ring-2 focus:ring-accent-500/25 focus:outline-none sm:text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+        rows="3"
+        placeholder="Testo della nota…"
+        class="w-full resize-y rounded-xl border-0 bg-transparent px-1 py-1.5 text-sm leading-relaxed text-slate-700 placeholder-slate-400 focus:ring-0 focus:outline-none dark:text-slate-200"
         aria-label="Testo della nota"
-        :disabled="isSaving"
       />
     </div>
 
-    <div class="mt-2 flex flex-wrap items-center justify-between gap-2">
-      <div class="flex min-w-0 items-center gap-2">
-        <span
-          class="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg"
-          :class="activeGroupMeta.colorClass"
+    <div class="mt-2 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2 dark:border-slate-800">
+      <GroupSelect
+        v-model="groupId"
+        :tree="tree"
+        aria-label="Gruppo della nota"
+        class="max-w-[14rem]"
+      />
+
+      <div class="flex items-center gap-1.5">
+        <input
+          v-model="newGroupName"
+          type="text"
+          :placeholder="groupId && canCreateUnderSelection ? `Nuovo dentro «${selected?.group.name}»` : 'Nuovo gruppo'"
+          class="w-40 rounded-xl border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs text-slate-800 placeholder-slate-400 focus:border-accent-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+          aria-label="Nome del nuovo gruppo"
+          @keydown.enter.prevent="createSubGroup"
+        >
+        <button
+          type="button"
+          class="rounded-xl border border-slate-200 px-2 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+          :disabled="!newGroupName.trim()"
+          :title="`Il gruppo attivo è «${selectedMeta.name}»`"
+          @click="createSubGroup"
         >
           <UIcon :name="activeGroupMeta.icon" class="h-3.5 w-3.5" />
-        </span>
-        <select
-          v-model="group"
-          class="max-w-[12rem] rounded-xl border border-slate-200 bg-slate-50 px-2 py-1.5 text-base font-medium text-slate-700 focus:border-accent-500 focus:outline-none sm:text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-          aria-label="Gruppo della nota"
-        >
-          <option v-for="name in groupOptions" :key="name" :value="name">{{ name }}</option>
-        </select>
-        <span v-if="charCount > 0" class="todo-meta text-slate-400 dark:text-slate-500">
-          {{ charCount }} caratteri
-        </span>
+        </button>
       </div>
 
-      <UButton
+      <span class="todo-meta text-slate-400 dark:text-slate-500">{{ charCount }} caratteri</span>
+
+      <button
         type="submit"
-        color="primary"
-        size="md"
-        :loading="isSaving"
+        class="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-accent-600 px-3 py-1.5 text-xs font-semibold text-white shadow-xs transition hover:bg-accent-700 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         :disabled="!canSubmit"
-        icon="i-lucide-notebook-pen"
-        class="rounded-xl font-semibold"
       >
-        Salva nota
-      </UButton>
+        <UIcon
+          :name="isSaving ? 'i-lucide-loader-circle' : 'i-lucide-save'"
+          class="h-3.5 w-3.5"
+          :class="isSaving ? 'animate-spin' : ''"
+        />
+        <span>Salva nota</span>
+      </button>
     </div>
   </form>
 </template>

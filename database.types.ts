@@ -14,67 +14,58 @@ export type Database = {
   }
   public: {
     Tables: {
-      todos: {
+      groups: {
         Row: {
-          completed: boolean | null
-          created_at: string | null
-          group_name: string | null
-          id: number
-          title: string
-          user_id: string | null
-        }
-        Insert: {
-          completed?: boolean | null
-          created_at?: string | null
-          group_name?: string | null
-          id?: number
-          title: string
-          user_id?: string | null
-        }
-        Update: {
-          completed?: boolean | null
-          created_at?: string | null
-          group_name?: string | null
-          id?: number
-          title?: string
-          user_id?: string | null
-        }
-        Relationships: []
-      }
-      todo_shares: {
-        Row: {
-          created_at: string | null
-          group_name: string | null
-          id: number
+          created_at: string
+          depth: number
+          icon: string
+          id: string
+          name: string
           owner_id: string
-          permission: 'read' | 'edit'
-          shared_with_email: string
-          shared_with_id: string | null
+          parent_id: string | null
+          path: string[]
+          tone: string
+          updated_at: string
         }
         Insert: {
-          created_at?: string | null
-          group_name?: string | null
-          id?: number
+          created_at?: string
+          depth?: number
+          icon?: string
+          id?: string
+          name: string
           owner_id?: string
-          permission?: 'read' | 'edit'
-          shared_with_email: string
-          shared_with_id?: string | null
+          parent_id?: string | null
+          path?: string[]
+          tone?: string
+          updated_at?: string
         }
         Update: {
-          created_at?: string | null
-          group_name?: string | null
-          id?: number
+          created_at?: string
+          depth?: number
+          icon?: string
+          id?: string
+          name?: string
           owner_id?: string
-          permission?: 'read' | 'edit'
-          shared_with_email?: string
-          shared_with_id?: string | null
+          parent_id?: string | null
+          path?: string[]
+          tone?: string
+          updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "groups_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "groups"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       notes: {
         Row: {
           body: string
           created_at: string | null
+          group_id: string | null
           group_name: string | null
           id: number
           title: string
@@ -84,6 +75,7 @@ export type Database = {
         Insert: {
           body?: string
           created_at?: string | null
+          group_id?: string | null
           group_name?: string | null
           id?: number
           title: string
@@ -93,13 +85,22 @@ export type Database = {
         Update: {
           body?: string
           created_at?: string | null
+          group_id?: string | null
           group_name?: string | null
           id?: number
           title?: string
           updated_at?: string | null
           user_id?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "notes_group_id_fkey"
+            columns: ["group_id"]
+            isOneToOne: false
+            referencedRelation: "groups"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       profiles: {
         Row: {
@@ -131,50 +132,134 @@ export type Database = {
         }
         Relationships: []
       }
+      todo_shares: {
+        Row: {
+          created_at: string | null
+          group_id: string | null
+          group_name: string | null
+          id: number
+          owner_id: string
+          permission: string | null
+          shared_with_email: string
+          shared_with_id: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          group_id?: string | null
+          group_name?: string | null
+          id?: number
+          owner_id?: string
+          permission?: string | null
+          shared_with_email: string
+          shared_with_id?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          group_id?: string | null
+          group_name?: string | null
+          id?: number
+          owner_id?: string
+          permission?: string | null
+          shared_with_email?: string
+          shared_with_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "todo_shares_group_id_fkey"
+            columns: ["group_id"]
+            isOneToOne: false
+            referencedRelation: "groups"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      todos: {
+        Row: {
+          completed: boolean | null
+          created_at: string | null
+          group_id: string | null
+          group_name: string | null
+          id: number
+          title: string
+          user_id: string | null
+        }
+        Insert: {
+          completed?: boolean | null
+          created_at?: string | null
+          group_id?: string | null
+          group_name?: string | null
+          id?: number
+          title: string
+          user_id?: string | null
+        }
+        Update: {
+          completed?: boolean | null
+          created_at?: string | null
+          group_id?: string | null
+          group_name?: string | null
+          id?: number
+          title?: string
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "todos_group_id_fkey"
+            columns: ["group_id"]
+            isOneToOne: false
+            referencedRelation: "groups"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      admin_delete_user: {
-        Args: { p_user_id: string }
-        Returns: undefined
-      }
+      admin_delete_user: { Args: { p_user_id: string }; Returns: undefined }
       admin_list_users: {
-        Args: Record<string, never>
+        Args: never
         Returns: {
           approved: boolean
-          approved_at: string | null
-          created_at: string | null
-          email: string | null
+          approved_at: string
+          created_at: string
+          email: string
           id: string
           is_admin: boolean
-          last_sign_in_at: string | null
+          last_sign_in_at: string
           note_count: number
           share_count: number
           todo_count: number
         }[]
       }
       admin_set_admin: {
-        Args: { p_is_admin: boolean, p_user_id: string }
+        Args: { p_is_admin: boolean; p_user_id: string }
         Returns: undefined
       }
       admin_set_approved: {
-        Args: { p_approved: boolean, p_user_id: string }
+        Args: { p_approved: boolean; p_user_id: string }
         Returns: undefined
       }
       admin_set_password: {
-        Args: { p_password: string, p_user_id: string }
+        Args: { p_password: string; p_user_id: string }
         Returns: undefined
       }
-      is_admin: {
-        Args: { uid: string }
+      can_access_group: {
+        Args: { p_group_id: string; p_owner: string; p_require_edit?: boolean }
         Returns: boolean
       }
-      is_approved: {
-        Args: { uid: string }
+      ensure_default_group: { Args: { p_user_id: string }; Returns: string }
+      group_access_for: {
+        Args: {
+          p_group_id: string
+          p_owner: string
+          p_require_edit?: boolean
+          p_viewer: string
+        }
         Returns: boolean
       }
+      is_admin: { Args: { uid: string }; Returns: boolean }
+      is_approved: { Args: { uid: string }; Returns: boolean }
     }
     Enums: {
       [_ in never]: never

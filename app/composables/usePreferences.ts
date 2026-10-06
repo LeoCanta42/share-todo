@@ -1,4 +1,4 @@
-import type { GroupStyle, GroupToneId } from '~/utils/groups'
+import type { GroupToneId } from '~/utils/groups'
 
 export type AccentId = 'emerald' | 'teal' | 'sky' | 'blue' | 'indigo' | 'violet' | 'rose' | 'amber'
 export type Density = 'compact' | 'cozy' | 'comfortable'
@@ -55,14 +55,6 @@ export interface Preferences {
   confirmDelete: boolean
   /** Hide completed activities from the "Tutti" tab. */
   hideCompleted: boolean
-  /** Groups the user created, kept even when no activity uses them yet. */
-  customGroups: string[]
-  /**
-   * Presets the user removed. They live in code, so the removal is remembered here
-   * and the group stops being offered until it is restored.
-   */
-  removedGroups: string[]
-  groupStyles: Record<string, GroupStyle>
 }
 
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -72,10 +64,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   sort: 'created-desc',
   groupSections: true,
   confirmDelete: true,
-  hideCompleted: false,
-  customGroups: [],
-  removedGroups: [],
-  groupStyles: {}
+  hideCompleted: false
 }
 
 const COOKIE_KEY = 'nt_prefs'
@@ -89,10 +78,7 @@ export function normalize(raw: Partial<Preferences> | null | undefined): Prefere
     sort: SORT_ORDERS.some(s => s.id === value.sort) ? value.sort as SortOrder : DEFAULT_PREFERENCES.sort,
     groupSections: value.groupSections ?? DEFAULT_PREFERENCES.groupSections,
     confirmDelete: value.confirmDelete ?? DEFAULT_PREFERENCES.confirmDelete,
-    hideCompleted: value.hideCompleted ?? DEFAULT_PREFERENCES.hideCompleted,
-    customGroups: Array.isArray(value.customGroups) ? value.customGroups.filter(g => typeof g === 'string') : [],
-    removedGroups: Array.isArray(value.removedGroups) ? value.removedGroups.filter(g => typeof g === 'string') : [],
-    groupStyles: value.groupStyles && typeof value.groupStyles === 'object' ? value.groupStyles : {}
+    hideCompleted: value.hideCompleted ?? DEFAULT_PREFERENCES.hideCompleted
   }
 }
 
@@ -154,66 +140,49 @@ export function usePreferences() {
     stored.value = normalize({ ...normalize(stored.value), ...changes })
   }
 
-  function setGroupStyle(name: string, style: Partial<GroupStyle>) {
-    const clean = (name || '').trim()
-    if (!clean) return
-    const current = normalize(stored.value)
-    update('groupStyles', {
-      ...current.groupStyles,
-      [clean]: {
-        tone: (style.tone ?? current.groupStyles[clean]?.tone ?? 'slate') as GroupToneId,
-        icon: style.icon ?? current.groupStyles[clean]?.icon ?? 'i-lucide-tag'
-      }
-    })
-  }
-
-  function addCustomGroup(name: string) {
-    const clean = (name || '').trim()
-    if (!clean) return
-    const current = normalize(prefs.value)
-    const exists = current.customGroups.some(g => g.toLowerCase() === clean.toLowerCase())
-    if (exists) return
-    update('customGroups', [...current.customGroups, clean])
-  }
-
-  function removeCustomGroup(name: string) {
-    const clean = name.trim().toLowerCase()
-    const current = normalize(prefs.value)
-    const styles = { ...current.groupStyles }
-    const target = Object.keys(styles).find(k => k.toLowerCase() === clean)
-    if (target) {
-      delete styles[target]
-    }
-    update('customGroups', current.customGroups.filter(g => g.toLowerCase() !== clean))
-    update('groupStyles', styles)
-  }
-
-  /** Remember that a preset group was removed (its activities are re-homed first). */
-  function markGroupRemoved(name: string) {
-    const clean = (name || '').trim()
-    if (!clean) return
-    const current = normalize(prefs.value)
-    if (current.removedGroups.some(g => g.toLowerCase() === clean.toLowerCase())) return
-    update('removedGroups', [...current.removedGroups, clean])
-  }
-
   /**
-   * Bring preset groups back. Called with no argument to restore every removed
-   * group at once. The style override is intentionally kept, so a restored preset
-   * looks the way the user had customised it.
+   * One-shot read of the group state the old cookie carried.
+   *
+   * Groups used to live in code (`customGroups`, `removedGroups`) with their colours
+   * in the cookie (`groupStyles`); they are rows owned by the account now. This hands
+   * that state over exactly once — the keys are deleted as they are read, so the next
+   * write of the preferences drops them for good.
    */
-  function restoreGroups(name?: string) {
-    const current = normalize(prefs.value)
-    if (!name) {
-      update('removedGroups', [])
-      return
+  function takeLegacyGroupState(): {
+    names: string[]
+    styles: Record<string, { tone: GroupToneId, icon: string }>
+  } {
+    const raw = (stored.value ?? {}) as Partial<Preferences> & {
+      customGroups?: unknown
+      groupStyles?: unknown
     }
-    const clean = name.trim().toLowerCase()
-    update('removedGroups', current.removedGroups.filter(g => g.toLowerCase() !== clean))
+
+    const names = Array.isArray(raw.customGroups)
+      ? raw.customGroups.filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+      : []
+
+    const styles: Record<string, { tone: GroupToneId, icon: string }> = {}
+    if (raw.groupStyles && typeof raw.groupStyles === 'object') {
+      for (const [name, value] of Object.entries(raw.groupStyles as Record<string, unknown>)) {
+        const entry = (value ?? {}) as { tone?: unknown, icon?: unknown }
+        styles[name] = {
+          tone: (typeof entry.tone === 'string' ? entry.tone : 'slate') as GroupToneId,
+          icon: typeof entry.icon === 'string' ? entry.icon : 'i-lucide-folder'
+        }
+      }
+    }
+
+    const cleaned = { ...(raw as Record<string, unknown>) }
+    delete cleaned.customGroups
+    delete cleaned.groupStyles
+    delete cleaned.removedGroups
+    stored.value = normalize(cleaned as Partial<Preferences>)
+
+    return { names, styles }
   }
 
   function reset() {
-    stored.value = { ...DEFAULT_PREFERENCES, customGroups: [], groupStyles: {} }
+    stored.value = { ...DEFAULT_PREFERENCES }
   }
 
   return {
@@ -221,11 +190,7 @@ export function usePreferences() {
     accentOption,
     update,
     patch,
-    setGroupStyle,
-    addCustomGroup,
-    removeCustomGroup,
-    markGroupRemoved,
-    restoreGroups,
+    takeLegacyGroupState,
     reset,
     normalize
   }

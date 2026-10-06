@@ -1,48 +1,55 @@
 <script setup lang="ts">
-import type { Todo } from '~/types/todo'
+import type { TodoWithGroup } from '~/types/todo'
+import type { GroupNode } from '~/types/group'
 import { formatFullDate } from '~/utils/date'
 import { haptic } from '~/utils/haptics'
+import { groupMetaOf } from '~/utils/groups'
 import { usePreferences, TEXT_SIZES } from '~/composables/usePreferences'
 import { useWebShare } from '~/composables/useWebShare'
+import { useShares } from '~/composables/useShares'
+import { useCurrentUser } from '~/composables/useCurrentUser'
 
 /**
  * Reading view for a single activity.
  *
  * Long activities used to be unreadable: the label was `select-none`, clamped to
- * one line by the row, and double-click opened a one-line input. This dialog
- * shows the full text (newlines preserved, selectable, scrollable), offers a
- * larger reading size, and keeps editing, retitling and deleting in one place.
+ * one line by the row, and double-click opened a one-line input. This dialog shows
+ * the full text (newlines preserved, selectable, scrollable), offers a larger reading
+ * size, and keeps editing, moving between groups and deleting in one place.
  */
 const props = defineProps<{
   open: boolean
-  todo: Todo | null
-  groups: string[]
-  isShared?: boolean
-  groupIcon?: string
-  groupColorClass?: string
-  canEdit?: boolean
+  todo: TodoWithGroup | null
+  /** The group tree, for the group picker. */
+  tree: GroupNode[]
 }>()
 
 const emit = defineEmits<{
   (e: 'update:open', value: boolean): void
-  (e: 'toggle', todo: Todo): void
-  (e: 'save', payload: { id: number, title: string, group: string }): void
+  (e: 'toggle', todo: TodoWithGroup): void
+  (e: 'save', payload: { id: number, title: string, groupId: string | null }): void
   (e: 'delete', id: number): void
-  (e: 'open-group', name: string): void
+  (e: 'open-group', groupId: string): void
 }>()
 
 const { prefs, update } = usePreferences()
+const { userId } = useCurrentUser()
+const { permissionFor } = useShares()
+const { canShare, share } = useWebShare()
 
 const isEditing = ref(false)
 const draftTitle = ref('')
-const draftGroup = ref('Generale')
+const draftGroupId = ref<string | null>(null)
 const copied = ref(false)
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
 const title = computed(() => props.todo?.title ?? '')
-const groupName = computed(() => (props.todo?.group_name || 'Generale').trim() || 'Generale')
+const meta = computed(() => groupMetaOf(props.todo?.group, props.todo?.group_name))
+const groupName = computed(() => meta.value.name)
 const isLong = computed(() => title.value.length > 90 || title.value.includes('\n'))
 const charCount = computed(() => draftTitle.value.trim().length)
+const canEdit = computed(() => (props.todo ? permissionFor(props.todo) !== 'read' : true))
+const isShared = computed(() => Boolean(props.todo?.user_id && props.todo.user_id !== userId.value))
 const sizeOptions = TEXT_SIZES.map(size => ({
   id: size.id,
   // The three buttons are the same "A", differentiated by their font size below.
@@ -58,9 +65,9 @@ function autosize() {
 }
 
 function startEditing() {
-  if (!props.todo || !props.canEdit) return
+  if (!props.todo || !canEdit.value) return
   draftTitle.value = props.todo.title
-  draftGroup.value = groupName.value
+  draftGroupId.value = props.todo.group_id ?? null
   isEditing.value = true
   nextTick(() => {
     autosize()
@@ -78,7 +85,7 @@ function save() {
   if (!props.todo) return
   const trimmed = draftTitle.value.trim()
   if (!trimmed) return
-  emit('save', { id: props.todo.id, title: trimmed, group: draftGroup.value })
+  emit('save', { id: props.todo.id, title: trimmed, groupId: draftGroupId.value })
   isEditing.value = false
 }
 
@@ -92,8 +99,6 @@ async function copyText() {
     console.error('Clipboard unavailable:', error)
   }
 }
-
-const { canShare, share } = useWebShare()
 
 /** Hand the activity to another app — the phone's share sheet, or the clipboard. */
 async function shareTodo() {
@@ -158,68 +163,62 @@ watch([() => draftTitle.value, () => isEditing.value], () => {
         <button
           type="button"
           class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-opacity hover:opacity-80"
-          :class="groupColorClass"
-          :title="`Vedi solo il gruppo ${groupName}`"
-          @click="emit('open-group', groupName); emit('update:open', false)"
+          :class="meta.colorClass"
+          :title="`Vedi il gruppo ${groupName}`"
+          @click="todo.group_id && emit('open-group', todo.group_id); emit('update:open', false)"
         >
-          <UIcon :name="groupIcon || 'i-lucide-folder'" class="h-3.5 w-3.5" />
+          <UIcon :name="meta.icon" class="h-3.5 w-3.5" />
           <span>{{ groupName }}</span>
         </button>
 
         <span
-          class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold"
-          :class="todo.completed
-            ? 'bg-accent-100 text-accent-700 dark:bg-accent-950/70 dark:text-accent-300'
-            : 'bg-amber-100 text-amber-700 dark:bg-amber-950/70 dark:text-amber-300'"
-        >
-          <UIcon :name="todo.completed ? 'i-lucide-circle-check' : 'i-lucide-clock'" class="h-3.5 w-3.5" />
-          <span>{{ todo.completed ? 'Completata' : 'Da fare' }}</span>
-        </span>
-
-        <span
           v-if="isShared"
-          class="inline-flex items-center gap-1 rounded-full bg-sky-100 px-2.5 py-1 text-[11px] font-semibold text-sky-700 dark:bg-sky-950/80 dark:text-sky-300"
+          class="inline-flex items-center gap-1 rounded-full bg-sky-100 px-2 py-1 text-[11px] font-semibold text-sky-700 dark:bg-sky-950/80 dark:text-sky-300"
         >
           <UIcon name="i-lucide-users" class="h-3.5 w-3.5" />
           <span>Condivisa con te</span>
         </span>
 
-        <span v-if="isLong && !isEditing" class="todo-meta text-slate-400 dark:text-slate-500">
-          {{ title.length }} caratteri
+        <span
+          v-if="!canEdit"
+          class="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+        >
+          <UIcon name="i-lucide-lock" class="h-3.5 w-3.5" />
+          <span>Sola lettura</span>
         </span>
       </div>
 
-      <!-- Reader / editor -->
-      <div
-        class="rounded-2xl border border-slate-200/80 bg-slate-50/70 p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900/40"
-      >
-        <textarea
-          v-if="isEditing"
-          ref="textareaRef"
-          v-model="draftTitle"
-          rows="3"
-          class="reading-text w-full resize-none rounded-xl border border-accent-500 bg-white px-3 py-2.5 text-slate-900 focus:ring-2 focus:ring-accent-500/25 focus:outline-none dark:bg-slate-900 dark:text-white"
-          aria-label="Testo dell'attività"
-          @keydown.esc.prevent="cancelEditing"
-          @keydown.meta.enter.prevent="save"
-          @keydown.ctrl.enter.prevent="save"
-        />
-        <p v-else class="reading-text reading-text-lg whitespace-pre-wrap break-words text-slate-800 select-text dark:text-slate-100">
-          {{ title }}
+      <!-- Reading -->
+      <div v-if="!isEditing" class="space-y-3">
+        <p
+          class="reading-text whitespace-pre-wrap break-words text-slate-800 select-text dark:text-slate-100"
+          :class="!isLong ? 'reading-text-lg' : ''"
+        >
+          {{ todo.title }}
         </p>
       </div>
 
-      <!-- Edit extras: group + counter -->
-      <div v-if="isEditing" class="space-y-2">
-        <label class="block text-[11px] font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
-          Gruppo
-        </label>
-        <select
-          v-model="draftGroup"
-          class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-accent-500 focus:ring-2 focus:ring-accent-500/25 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-        >
-          <option v-for="g in groups" :key="g" :value="g">{{ g }}</option>
-        </select>
+      <!-- Editing -->
+      <div v-else class="space-y-3">
+        <textarea
+          ref="textareaRef"
+          v-model="draftTitle"
+          rows="3"
+          class="reading-text w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-slate-800 focus:border-accent-500 focus:ring-2 focus:ring-accent-500/25 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+          aria-label="Testo dell'attività"
+          :disabled="!canEdit"
+        />
+        <div class="space-y-1.5">
+          <label class="todo-meta font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
+            Gruppo
+          </label>
+          <GroupSelect
+            v-model="draftGroupId"
+            :tree="tree"
+            :disabled="!canEdit"
+            aria-label="Gruppo dell'attività"
+          />
+        </div>
         <p class="todo-meta text-slate-400 dark:text-slate-500">
           {{ charCount }} caratteri · Premi ⌘/Ctrl + Invio per salvare
         </p>

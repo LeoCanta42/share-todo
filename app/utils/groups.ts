@@ -1,5 +1,6 @@
-export type GroupToneId =
-  | 'slate'
+import type { Group } from '~/types/group'
+
+export type GroupToneId =  | 'slate'
   | 'sky'
   | 'blue'
   | 'indigo'
@@ -137,6 +138,21 @@ export function getGroupMeta(groupName?: string | null, style?: GroupStyle): Gro
   const meta = buildGroupMeta(normalized, style)
   metaCache.set(key, meta)
   return meta
+}
+
+/**
+ * Badge look of a group row.
+ *
+ * A group now carries its own tone and icon (they live in the database, so they
+ * follow the person across devices), which is what this reads. When the row is not
+ * readable — a revoked grant leaves an activity whose group we cannot see — the name
+ * it kept is hashed to a colour instead, so the chip is never blank.
+ */
+export function groupMetaOf(group: Group | null | undefined, fallbackName?: string | null): GroupMeta {
+  if (!group) return getGroupMeta(fallbackName)
+
+  const tone = GROUP_TONES.some(t => t.id === group.tone) ? group.tone as GroupToneId : undefined
+  return getGroupMeta(group.name, { tone: tone ?? 'slate', icon: group.icon || 'i-lucide-folder' })
 }
 
 function hash(value: string): number {

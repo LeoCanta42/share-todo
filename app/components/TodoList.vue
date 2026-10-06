@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import type { Todo } from '~/types/todo'
-import type { GroupMeta } from '~/utils/groups'
+import { useTodos } from '~/composables/useTodos'
+import { useGroups } from '~/composables/useGroups'
 import { usePreferences } from '~/composables/usePreferences'
 import { useShares } from '~/composables/useShares'
+import { groupMetaOf } from '~/utils/groups'
+import type { GroupMeta } from '~/utils/groups'
+import type { GroupNode } from '~/types/group'
+import type { TodoWithGroup } from '~/types/todo'
 
 interface Row {
-  todo: Todo
+  todo: TodoWithGroup
   meta: GroupMeta
   shared: boolean
   canEdit: boolean
@@ -16,12 +20,12 @@ interface Row {
  * and only forwards user intent upwards, where the confirmation rules live.
  */
 const emit = defineEmits<{
-  (e: 'toggle', todo: Todo): void
+  (e: 'toggle', todo: TodoWithGroup): void
   (e: 'updateTitle', id: number, newTitle: string): void
-  (e: 'updateGroup', id: number, newGroup: string): void
+  (e: 'updateGroup', id: number, groupId: string | null): void
   (e: 'delete', id: number): void
-  (e: 'openDetail', todo: Todo): void
-  (e: 'openGroup', group: string): void
+  (e: 'openDetail', todo: TodoWithGroup): void
+  (e: 'openGroup', groupId: string): void
   (e: 'clearFilters'): void
   (e: 'create'): void
 }>()
@@ -34,20 +38,19 @@ const {
   filter,
   scope,
   searchQuery,
-  availableGroups,
   scopedStats,
-  isShared,
-  groupMeta
+  isShared
 } = useTodos()
 
+const { tree } = useGroups()
 const { prefs } = usePreferences()
 const { permissionFor } = useShares()
 
 const useSections = computed(() => prefs.value.sort === 'group' && prefs.value.groupSections)
 
 /**
- * The group is deliberately not part of this: on `/g/:group` the scope comes from
- * the route, so treating it as a "filter" would offer an "Azzera i filtri" button
+ * The group is deliberately not part of this: on `/g/…` the scope comes from the
+ * route, so treating it as a "filter" would offer an "Azzera i filtri" button
  * that empties the page it is on.
  */
 const isFiltering = computed(() =>
@@ -55,16 +58,17 @@ const isFiltering = computed(() =>
 )
 
 /**
- * Row view-models are built once per data change rather than being derived inside
- * the template. That matters for more than tidiness: `groupMeta()` now returns a
- * memoised object and the permission flags are plain booleans, so rows whose data
- * did not change receive identical props and Vue skips re-rendering them — the
- * difference between patching one row and patching all of them on every action.
+ * Row view-models are built once per data change rather than derived inside the
+ * template: the badge look is memoised per group, and the permission flags are plain
+ * booleans, so rows whose data did not change receive identical props and Vue skips
+ * re-rendering them.
  */
-function toRows(todos: Todo[]): Row[] {
+function toRows(todos: TodoWithGroup[]): Row[] {
   return todos.map(todo => ({
     todo,
-    meta: groupMeta(todo.group_name),
+    // The group row carries the colour and the icon; a row whose group is no longer
+    // readable keeps the name it mirrored.
+    meta: groupMetaOf(todo.group, todo.group_name),
     shared: isShared(todo),
     canEdit: permissionFor(todo) !== 'read'
   }))
@@ -73,8 +77,8 @@ function toRows(todos: Todo[]): Row[] {
 const rows = computed<Row[]>(() => toRows(filteredTodos.value))
 
 const sections = computed(() => groupedTodos.value.map(section => ({
+  id: section.groupId || 'none',
   name: section.name,
-  meta: section.meta,
   rows: toRows(section.todos)
 })))
 </script>
@@ -111,15 +115,15 @@ const sections = computed(() => groupedTodos.value.map(section => ({
     <template v-else-if="useSections">
       <section
         v-for="section in sections"
-        :key="section.name"
+        :key="section.id"
         class="space-y-2"
       >
         <header class="flex items-center gap-2 px-1 pt-2">
           <span
             class="flex h-6 w-6 items-center justify-center rounded-lg"
-            :class="section.meta.colorClass"
+            :class="groupMetaOf(section.rows[0]?.todo.group, section.name).colorClass"
           >
-            <UIcon :name="section.meta.icon" class="h-3.5 w-3.5" />
+            <UIcon :name="groupMetaOf(section.rows[0]?.todo.group, section.name).icon" class="h-3.5 w-3.5" />
           </span>
           <h3 class="text-xs font-bold tracking-wider text-slate-500 uppercase dark:text-slate-400">
             {{ section.name }}
@@ -139,11 +143,11 @@ const sections = computed(() => groupedTodos.value.map(section => ({
             :is-pending="activeActionId === row.todo.id"
             :is-shared="row.shared"
             :can-edit="row.canEdit"
-            :available-groups="availableGroups"
+            :tree="tree"
             @toggle="emit('toggle', $event)"
             @update-title="(id, title) => emit('updateTitle', id, title)"
-            @update-group="(id, group) => emit('updateGroup', id, group)"
-            @open-group="(grp) => emit('openGroup', grp)"
+            @update-group="(id, groupId) => emit('updateGroup', id, groupId)"
+            @open-group="(groupId) => emit('openGroup', groupId)"
             @open-detail="emit('openDetail', $event)"
             @delete="emit('delete', $event)"
           />
@@ -161,11 +165,11 @@ const sections = computed(() => groupedTodos.value.map(section => ({
         :is-pending="activeActionId === row.todo.id"
         :is-shared="row.shared"
         :can-edit="row.canEdit"
-        :available-groups="availableGroups"
+        :tree="tree"
         @toggle="emit('toggle', $event)"
         @update-title="(id, title) => emit('updateTitle', id, title)"
-        @update-group="(id, group) => emit('updateGroup', id, group)"
-        @open-group="(grp) => emit('openGroup', grp)"
+        @update-group="(id, groupId) => emit('updateGroup', id, groupId)"
+        @open-group="(groupId) => emit('openGroup', groupId)"
         @open-detail="emit('openDetail', $event)"
         @delete="emit('delete', $event)"
       />

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { Todo } from '~/types/todo'
+import type { TodoWithGroup } from '~/types/todo'
+import type { GroupNode } from '~/types/group'
 import { formatDate } from '~/utils/date'
 import { haptic } from '~/utils/haptics'
 import type { GroupMeta } from '~/utils/groups'
@@ -8,38 +9,37 @@ import { usePreferences } from '~/composables/usePreferences'
 /**
  * One activity row.
  *
- * Behaviour changes from the previous version:
- * - clicking the label opens the reading modal instead of toggling (the two
- *   previous handlers fought each other: the single click toggled twice and the
- *   double click also started an edit);
- * - the label is selectable and wrapped, so long text can be read and copied;
- * - long text gets a "Leggi tutto" inline expansion plus the modal;
- * - all theme colours come from the accent tokens.
+ * Clicking the label opens the reading modal; the checkbox is the only thing that
+ * toggles. The label is selectable and wrapped so long text can be read and copied,
+ * long text gets a "Leggi tutto" inline expansion plus the modal, and every theme
+ * colour comes from the accent tokens.
  */
 const props = withDefaults(defineProps<{
-  todo: Todo
+  todo: TodoWithGroup
   groupMeta: GroupMeta
   isPending?: boolean
   isShared?: boolean
   /** False for a list shared with me in read-only mode. */
   canEdit?: boolean
-  availableGroups?: string[]
+  /** The group tree, for the inline editor's picker. */
+  tree?: GroupNode[]
 }>(), {
-  canEdit: true
+  canEdit: true,
+  tree: () => []
 })
 
 const emit = defineEmits<{
-  (e: 'toggle', todo: Todo): void
+  (e: 'toggle', todo: TodoWithGroup): void
   (e: 'updateTitle', id: number, newTitle: string): void
-  (e: 'updateGroup', id: number, newGroup: string): void
-  (e: 'openDetail', todo: Todo): void
-  (e: 'openGroup', group: string): void
+  (e: 'updateGroup', id: number, groupId: string | null): void
+  (e: 'openDetail', todo: TodoWithGroup): void
+  (e: 'openGroup', groupId: string): void
   (e: 'delete', id: number): void
 }>()
 
 const isEditing = ref(false)
 const editTitle = ref('')
-const editGroup = ref('Generale')
+const editGroupId = ref<string | null>(null)
 const editRef = ref<HTMLTextAreaElement | null>(null)
 
 const { prefs } = usePreferences()
@@ -62,7 +62,7 @@ const shortTitle = computed(() => {
 function startEditing() {
   if (props.isPending) return
   editTitle.value = props.todo.title
-  editGroup.value = props.todo.group_name || 'Generale'
+  editGroupId.value = props.todo.group_id ?? null
   isEditing.value = true
   nextTick(() => {
     const el = editRef.value
@@ -84,8 +84,8 @@ function saveEdit() {
   if (trimmed && trimmed !== props.todo.title) {
     emit('updateTitle', props.todo.id, trimmed)
   }
-  if (editGroup.value && editGroup.value !== (props.todo.group_name || 'Generale')) {
-    emit('updateGroup', props.todo.id, editGroup.value)
+  if ((editGroupId.value ?? null) !== (props.todo.group_id ?? null)) {
+    emit('updateGroup', props.todo.id, editGroupId.value)
   }
   isEditing.value = false
 }
@@ -93,7 +93,7 @@ function saveEdit() {
 function cancelEdit() {
   isEditing.value = false
   editTitle.value = props.todo.title
-  editGroup.value = props.todo.group_name || 'Generale'
+  editGroupId.value = props.todo.group_id ?? null
 }
 
 /** Keep drag-selection working: a click that ends a selection must not open the modal. */
@@ -159,14 +159,13 @@ function toggleComplete() {
           @keydown.ctrl.enter.prevent="saveEdit"
         />
         <div class="flex flex-wrap items-center gap-2">
-          <select
-            v-if="availableGroups && availableGroups.length > 0"
-            v-model="editGroup"
-            class="rounded-lg border border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-800 focus:border-accent-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+          <GroupSelect
+            v-if="tree.length"
+            v-model="editGroupId"
+            :tree="tree"
             aria-label="Gruppo"
-          >
-            <option v-for="g in availableGroups" :key="g" :value="g">{{ g }}</option>
-          </select>
+            class="max-w-[14rem] text-xs"
+          />
           <button
             type="submit"
             class="rounded-lg bg-accent-600 px-2.5 py-1 text-xs font-semibold text-white transition-colors hover:bg-accent-700"
@@ -206,13 +205,13 @@ function toggleComplete() {
         </button>
 
         <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
-          <!-- Group chip: tapping it filters the list -->
+          <!-- Group chip: tapping it opens that group's page -->
           <button
             type="button"
             class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
             :class="groupMeta.colorClass"
             :title="`Apri il gruppo: ${groupMeta.name}`"
-            @click.stop="emit('openGroup', groupMeta.name)"
+            @click.stop="todo.group_id && emit('openGroup', todo.group_id)"
           >
             <UIcon :name="groupMeta.icon" class="h-3 w-3" />
             <span class="todo-meta">{{ groupMeta.name }}</span>

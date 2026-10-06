@@ -142,6 +142,91 @@ CREATE INDEX IF NOT EXISTS idx_profiles_email ON public.profiles(LOWER(email));
 CREATE INDEX IF NOT EXISTS idx_profiles_pending ON public.profiles(approved) WHERE approved = FALSE;
 
 
+-- ------------------------------------------------------------------ 1.5 groups
+-- The group tree.
+--
+-- Until now a "group" was only a name repeated on every row (`todos.group_name`):
+-- there was nothing to attach a parent to, nothing to rename in one place, and the
+-- colour/icon of a group lived in the per-device preferences cookie. Groups become
+-- real rows here, which is what makes sub-groups possible.
+--
+--   path  = the ancestor chain INCLUDING the group itself, {root, …, self}.
+--           Maintained by trigger. It exists so that "a grant on Lavoro also covers
+--           Lavoro/Clienti" is an array containment inside the share policies,
+--           instead of a recursive query evaluated once per row (see
+--           public.can_access_group in section 3).
+--   depth = 1 for a top-level group. The three-level limit lives in the app
+--           (MAX_GROUP_DEPTH in app/utils/groups.ts), so raising it is a code
+--           change rather than another migration.
+--   tone / icon = the badge look, moved here from the preferences cookie so it
+--           follows the person across devices.
+CREATE TABLE IF NOT EXISTS public.groups (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
+  parent_id UUID REFERENCES public.groups(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  tone TEXT NOT NULL DEFAULT 'slate',
+  icon TEXT NOT NULL DEFAULT 'i-lucide-folder',
+  path UUID[] NOT NULL DEFAULT '{}',
+  depth INT NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.groups ADD COLUMN IF NOT EXISTS owner_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.groups ADD COLUMN IF NOT EXISTS parent_id UUID REFERENCES public.groups(id) ON DELETE CASCADE;
+ALTER TABLE public.groups ADD COLUMN IF NOT EXISTS tone TEXT NOT NULL DEFAULT 'slate';
+ALTER TABLE public.groups ADD COLUMN IF NOT EXISTS icon TEXT NOT NULL DEFAULT 'i-lucide-folder';
+ALTER TABLE public.groups ADD COLUMN IF NOT EXISTS path UUID[] NOT NULL DEFAULT '{}';
+ALTER TABLE public.groups ADD COLUMN IF NOT EXISTS depth INT NOT NULL DEFAULT 1;
+ALTER TABLE public.groups ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE INDEX IF NOT EXISTS idx_groups_owner ON public.groups(owner_id);
+CREATE INDEX IF NOT EXISTS idx_groups_parent ON public.groups(parent_id);
+-- Ancestor lookups (`group_id = ANY(path)`) are what the share policies do.
+CREATE INDEX IF NOT EXISTS idx_groups_path ON public.groups USING GIN (path);
+
+-- Two sub-groups of the same parent cannot share a name: the pretty URL
+-- /g/Lavoro/Clienti resolves by walking names, so a duplicate would be ambiguous.
+-- A top-level group and a sub-group may of course share a name.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_unique_name
+  ON public.groups (owner_id, COALESCE(parent_id, '00000000-0000-0000-0000-000000000000'::uuid), LOWER(name));
+
+-- A name may not contain the "/" that separates the URL segments, and may not be
+-- blank. NOT VALID on purpose: it is enforced for every new write without failing
+-- the migration on a legacy name that happens to contain a slash (see the check
+-- list at the end of section 2).
+ALTER TABLE public.groups DROP CONSTRAINT IF EXISTS groups_name_shape_check;
+ALTER TABLE public.groups ADD CONSTRAINT groups_name_shape_check
+  CHECK (length(trim(name)) > 0 AND position('/' IN name) = 0) NOT VALID;
+
+-- --------------------------------------------------------- 1.6 item group_id
+-- Activities and notes point at a group row instead of carrying its name. NULL is
+-- tolerated (a group that was deleted) and normalised to the owner's "Generale" by
+-- the trigger in section 2, so no row stays ungrouped.
+--
+-- `group_name` STAYS on both tables as a display cache kept in step by that same
+-- trigger: the alternative is a join in every list query, and the name is only ever
+-- read for display. Writes go to `group_id`; `group_name` is derived.
+ALTER TABLE public.todos ADD COLUMN IF NOT EXISTS group_id UUID REFERENCES public.groups(id) ON DELETE SET NULL;
+ALTER TABLE public.notes ADD COLUMN IF NOT EXISTS group_id UUID REFERENCES public.groups(id) ON DELETE SET NULL;
+ALTER TABLE public.todo_shares ADD COLUMN IF NOT EXISTS group_id UUID REFERENCES public.groups(id) ON DELETE CASCADE;
+
+CREATE INDEX IF NOT EXISTS idx_todos_group_id ON public.todos(group_id);
+CREATE INDEX IF NOT EXISTS idx_notes_group_id ON public.notes(group_id);
+CREATE INDEX IF NOT EXISTS idx_todo_shares_group_id ON public.todo_shares(group_id);
+
+-- Uniqueness moves to the group id. The old index keyed on `group_name` has to go:
+-- with no name written on new shares, every NULL would look like the same
+-- whole-list grant and block sharing a second group with the same person.
+--
+-- The replacement index is created at the end of section 2.5, once the existing
+-- grants have been linked to their group: while every legacy row still carries a
+-- NULL group_id they are indistinguishable from each other and the index cannot be
+-- built at all.
+DROP INDEX IF EXISTS public.idx_todo_shares_unique;
+
+
 -- ==============================================================================
 -- 2. PROFILES BOOKKEEPING
 -- ==============================================================================
@@ -213,6 +298,510 @@ WHERE u.id = p.id AND (p.email IS NULL OR p.email IS DISTINCT FROM LOWER(u.email
 
 
 -- ==============================================================================
+-- 2.5 GROUP BOOKKEEPING
+-- Paths, the default group, the display names, and the move from names to rows.
+-- ==============================================================================
+
+-- ------------------------------------------------------- 2.5.0 the access rule
+-- Whether `p_viewer` may reach an item that lives in `p_group_id` and belongs to
+-- `p_owner` — through a grant on that group, or on any of its ancestors.
+--
+-- This replaces the name equality that used to be copied into all six policies
+-- (`s.group_name = COALESCE(todos.group_name, 'Generale')`). Two reasons it is a
+-- function now: the rule has to walk ancestry (a grant on Lavoro covers
+-- Lavoro/Clienti), and six copies of a rule is six places to get it wrong.
+--
+-- The viewer is a parameter rather than `auth.uid()` on purpose. When the policies
+-- ask, the viewer is the caller; when the trigger asks, the viewer is the *author of
+-- the row* — which is also what the policies mean by `todos.user_id`. Reading
+-- `auth.uid()` here instead would break every write made outside an HTTP request:
+-- running this very file as the project owner makes `auth.uid()` NULL, and the
+-- backfill below would be refused while linking a collaborator's activity.
+--
+-- Lives here rather than with the other policy helpers in section 3 because the
+-- triggers below need it before that point of the file is reached.
+--
+-- SECURITY DEFINER for the same reason as `is_admin`/`is_approved`: it is called
+-- *from* the policies that guard `groups` and `todo_shares`, so an invoker-rights
+-- version would be filtered by its own policy.
+CREATE OR REPLACE FUNCTION public.group_access_for(
+  p_viewer UUID,
+  p_owner UUID,
+  p_group_id UUID,
+  p_require_edit BOOLEAN DEFAULT FALSE
+)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.groups g
+    JOIN public.todo_shares s ON s.owner_id = p_owner
+    WHERE g.id = p_group_id
+      AND p_viewer IS NOT NULL
+      AND (
+        s.shared_with_id = p_viewer
+        OR LOWER(s.shared_with_email) = LOWER(COALESCE((SELECT u.email FROM auth.users u WHERE u.id = p_viewer), ''))
+      )
+      AND (NOT p_require_edit OR s.permission = 'edit')
+      -- A NULL group_id is the whole-list grant; otherwise the grant must be the
+      -- item's own group or one of its ancestors — `path` includes the group.
+      AND (s.group_id IS NULL OR s.group_id = ANY(g.path))
+  );
+$$;
+
+-- What the policies call: the viewer is whoever is making the request, and cannot
+-- be chosen by the caller. EXECUTE on `group_access_for` is deliberately NOT granted
+-- to clients — with the viewer as an argument it would answer questions about other
+-- people's grants.
+CREATE OR REPLACE FUNCTION public.can_access_group(
+  p_owner UUID,
+  p_group_id UUID,
+  p_require_edit BOOLEAN DEFAULT FALSE
+)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT public.group_access_for(auth.uid(), p_owner, p_group_id, p_require_edit);
+$$;
+
+-- ------------------------------------------------------- 2.5.1 path and depth
+-- SECURITY DEFINER because it writes columns the caller must not be trusted to
+-- compute (a client that could set `path` could make a grant cover someone else's
+-- subtree).
+CREATE OR REPLACE FUNCTION public.groups_set_path()
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  parent public.groups%ROWTYPE;
+BEGIN
+  IF NEW.parent_id IS NULL THEN
+    NEW.path := ARRAY[NEW.id];
+  ELSE
+    SELECT * INTO parent FROM public.groups WHERE id = NEW.parent_id;
+
+    IF parent.id IS NULL THEN
+      RAISE EXCEPTION 'group % does not exist', NEW.parent_id;
+    END IF;
+
+    IF parent.owner_id <> NEW.owner_id THEN
+      RAISE EXCEPTION 'a sub-group must belong to the same owner as its parent';
+    END IF;
+
+    -- Re-parenting a group under itself or under one of its own descendants would
+    -- make the path loop back on itself, and every later ancestor check with it.
+    IF NEW.id = ANY(parent.path) THEN
+      RAISE EXCEPTION 'a group cannot be its own ancestor';
+    END IF;
+
+    NEW.path := parent.path || NEW.id;
+  END IF;
+
+  NEW.depth := COALESCE(array_length(NEW.path, 1), 1);
+  NEW.updated_at := NOW();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_groups_set_path ON public.groups;
+CREATE TRIGGER on_groups_set_path
+  BEFORE INSERT OR UPDATE OF parent_id, name, owner_id ON public.groups
+  FOR EACH ROW EXECUTE FUNCTION public.groups_set_path();
+
+-- Moving a group has to move its whole subtree with it, because every descendant's
+-- path contains its ancestors' ids. Bounded by the three-level rule in the app, so
+-- this recursion is at most two steps deep.
+CREATE OR REPLACE FUNCTION public.groups_cascade_path()
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  -- The UPDATE below fires this trigger again for every descendant; only the
+  -- outermost statement rebuilds the subtree.
+  IF pg_trigger_depth() > 1 THEN
+    RETURN NULL;
+  END IF;
+
+  IF NEW.path IS NOT DISTINCT FROM OLD.path THEN
+    RETURN NULL;
+  END IF;
+
+  WITH RECURSIVE subtree AS (
+    SELECT g.id, NEW.path || g.id AS new_path
+    FROM public.groups g
+    WHERE g.parent_id = NEW.id
+    UNION ALL
+    SELECT c.id, s.new_path || c.id
+    FROM public.groups c
+    JOIN subtree s ON c.parent_id = s.id
+  )
+  UPDATE public.groups g
+  SET path = s.new_path,
+      depth = array_length(s.new_path, 1),
+      updated_at = NOW()
+  FROM subtree s
+  WHERE g.id = s.id;
+
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_groups_cascade_path ON public.groups;
+-- Fires on any update, not `UPDATE OF path`: a move only names `parent_id`, and the
+-- path itself is written by the BEFORE trigger above — which does not count as
+-- "updating that column" for an UPDATE OF trigger. The early return inside the
+-- function keeps unrelated updates (a rename, a colour change) free.
+CREATE TRIGGER on_groups_cascade_path
+  AFTER UPDATE ON public.groups
+  FOR EACH ROW EXECUTE FUNCTION public.groups_cascade_path();
+
+-- Renaming a group is now a one-row change: the name cached on the activities,
+-- notes and grants follows from here.
+CREATE OR REPLACE FUNCTION public.groups_sync_item_names()
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  IF NEW.name IS NOT DISTINCT FROM OLD.name THEN
+    RETURN NULL;
+  END IF;
+
+  UPDATE public.todos        SET group_name = NEW.name WHERE group_id = NEW.id;
+  UPDATE public.notes        SET group_name = NEW.name WHERE group_id = NEW.id;
+  UPDATE public.todo_shares  SET group_name = NEW.name WHERE group_id = NEW.id;
+
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_groups_sync_item_names ON public.groups;
+CREATE TRIGGER on_groups_sync_item_names
+  AFTER UPDATE OF name ON public.groups
+  FOR EACH ROW EXECUTE FUNCTION public.groups_sync_item_names();
+
+-- ---------------------------------------------------- 2.5.2 the default group
+-- "Generale" is a real row like every other group (it can be renamed, and shared
+-- on its own), created on demand and never missing. It is the bucket an activity
+-- without a group — or whose group was just deleted — lands in.
+CREATE OR REPLACE FUNCTION public.ensure_default_group(p_user_id UUID)
+RETURNS UUID
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  found UUID;
+BEGIN
+  SELECT id INTO found
+  FROM public.groups
+  WHERE owner_id = p_user_id AND parent_id IS NULL AND LOWER(name) = 'generale'
+  LIMIT 1;
+
+  IF found IS NULL THEN
+    INSERT INTO public.groups (owner_id, name, tone, icon)
+    VALUES (p_user_id, 'Generale', 'slate', 'i-lucide-folder')
+    RETURNING id INTO found;
+  END IF;
+
+  RETURN found;
+END;
+$$;
+
+-- Activities and notes: derive `group_name` from `group_id` on every write, so the
+-- cache can never drift, and refuse to file a row into someone else's group.
+CREATE OR REPLACE FUNCTION public.items_set_group()
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  group_owner UUID;
+BEGIN
+  IF NEW.group_id IS NULL THEN
+    -- Also the path taken when a group is deleted: the foreign key sets group_id
+    -- to NULL, and the row is re-homed here rather than left without a group.
+    NEW.group_id := public.ensure_default_group(NEW.user_id);
+  END IF;
+
+  SELECT owner_id, name INTO group_owner, NEW.group_name
+  FROM public.groups
+  WHERE id = NEW.group_id;
+
+  IF group_owner IS NULL THEN
+    RAISE EXCEPTION 'group % does not exist', NEW.group_id;
+  END IF;
+
+  -- Your own group, or one shared with you for editing — which is how a
+  -- collaborator has always been able to add an activity to a shared list.
+  -- The check is about the row's author (NEW.user_id), not about whoever is running
+  -- the statement: the backfill in 2.5.4 does exactly this on behalf of other users.
+  IF NEW.user_id IS NOT NULL
+     AND group_owner <> NEW.user_id
+     AND NOT public.group_access_for(NEW.user_id, group_owner, NEW.group_id, TRUE) THEN
+    RAISE EXCEPTION 'an activity can only live in your own group or one shared with you for editing';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_todos_set_group ON public.todos;
+CREATE TRIGGER on_todos_set_group
+  BEFORE INSERT OR UPDATE ON public.todos
+  FOR EACH ROW EXECUTE FUNCTION public.items_set_group();
+
+DROP TRIGGER IF EXISTS on_notes_set_group ON public.notes;
+CREATE TRIGGER on_notes_set_group
+  BEFORE INSERT OR UPDATE ON public.notes
+  FOR EACH ROW EXECUTE FUNCTION public.items_set_group();
+
+-- Grants: a share points at a group row, and keeps the name only for display.
+-- NULL group_id is the whole-list grant, which is why a name that fails to resolve
+-- must raise instead of silently falling back to "everything".
+CREATE OR REPLACE FUNCTION public.shares_set_group()
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  IF NEW.group_id IS NULL THEN
+    NEW.group_name := NULL;
+    RETURN NEW;
+  END IF;
+
+  SELECT name INTO NEW.group_name
+  FROM public.groups
+  WHERE id = NEW.group_id AND owner_id = NEW.owner_id;
+
+  IF NEW.group_name IS NULL THEN
+    RAISE EXCEPTION 'a grant can only point at a group of its own owner';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_todo_shares_set_group ON public.todo_shares;
+CREATE TRIGGER on_todo_shares_set_group
+  BEFORE INSERT OR UPDATE ON public.todo_shares
+  FOR EACH ROW EXECUTE FUNCTION public.shares_set_group();
+
+-- --------------------------------------------------------- 2.5.3 new signups
+-- The preset set the app has always shown in its pickers. Keep in step with
+-- DEFAULT_GROUPS in app/utils/groups.ts.
+CREATE OR REPLACE FUNCTION public.handle_new_user_groups()
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  INSERT INTO public.groups (owner_id, name, tone, icon)
+  SELECT NEW.id, p.name, p.tone, p.icon
+  FROM (VALUES
+    ('Generale', 'slate',   'i-lucide-folder'),
+    ('Lavoro',   'blue',    'i-lucide-briefcase'),
+    ('Casa',     'violet',  'i-lucide-home'),
+    ('Spesa',    'amber',   'i-lucide-shopping-cart'),
+    ('Studio',   'emerald', 'i-lucide-book-open'),
+    ('Progetto', 'rose',    'i-lucide-target')
+  ) AS p(name, tone, icon)
+  WHERE NOT EXISTS (
+    SELECT 1 FROM public.groups g
+    WHERE g.owner_id = NEW.id AND g.parent_id IS NULL AND LOWER(g.name) = LOWER(p.name)
+  );
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_auth_user_created_groups ON auth.users;
+CREATE TRIGGER on_auth_user_created_groups
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user_groups();
+
+-- ------------------------------------------- 2.5.4 moving the existing data in
+-- Idempotent, like the rest of this file: it only ever fills gaps.
+
+-- 1. every account gets the preset set (the app has always offered them)
+INSERT INTO public.groups (owner_id, name, tone, icon)
+SELECT u.id, p.name, p.tone, p.icon
+FROM auth.users u
+CROSS JOIN (VALUES
+  ('Generale', 'slate',   'i-lucide-folder'),
+  ('Lavoro',   'blue',    'i-lucide-briefcase'),
+  ('Casa',     'violet',  'i-lucide-home'),
+  ('Spesa',    'amber',   'i-lucide-shopping-cart'),
+  ('Studio',   'emerald', 'i-lucide-book-open'),
+  ('Progetto', 'rose',    'i-lucide-target')
+) AS p(name, tone, icon)
+WHERE NOT EXISTS (
+  SELECT 1 FROM public.groups g
+  WHERE g.owner_id = u.id AND g.parent_id IS NULL AND LOWER(g.name) = LOWER(p.name)
+);
+
+-- 2. names that only appear on a grant, as a row owned by the person who granted
+--    it. This one matters beyond tidiness: a grant whose name resolves to no group
+--    would keep a NULL group_id, and NULL means "the whole list" — a stale grant
+--    on a deleted group would silently widen into access to everything.
+INSERT INTO public.groups (owner_id, name)
+SELECT DISTINCT s.owner_id, trim(s.group_name)
+FROM public.todo_shares s
+WHERE s.group_name IS NOT NULL
+  AND trim(s.group_name) <> ''
+  AND NOT EXISTS (
+    SELECT 1 FROM public.groups g
+    WHERE g.owner_id = s.owner_id AND g.parent_id IS NULL AND LOWER(g.name) = LOWER(trim(s.group_name))
+  );
+
+-- 3. files each row into its group, in order of how certain the answer is:
+--    a) a group of its own with that name;
+--    b) a group of someone else's that is shared with it — a collaborator's
+--       activity filed in "Lavoro" belongs in the shared Lavoro, not in a second
+--       top-level group of their own carrying the same name;
+--    c) otherwise the name was theirs alone, and becomes a group of their own.
+UPDATE public.todos t
+SET group_id = g.id
+FROM public.groups g
+WHERE t.group_id IS NULL
+  AND g.owner_id = t.user_id
+  AND g.parent_id IS NULL
+  AND LOWER(g.name) = LOWER(trim(COALESCE(NULLIF(t.group_name, ''), 'Generale')));
+
+UPDATE public.notes n
+SET group_id = g.id
+FROM public.groups g
+WHERE n.group_id IS NULL
+  AND g.owner_id = n.user_id
+  AND g.parent_id IS NULL
+  AND LOWER(g.name) = LOWER(trim(COALESCE(NULLIF(n.group_name, ''), 'Generale')));
+
+UPDATE public.todos t
+SET group_id = g.id
+FROM public.groups g
+WHERE t.group_id IS NULL
+  AND g.parent_id IS NULL
+  AND LOWER(g.name) = LOWER(trim(COALESCE(NULLIF(t.group_name, ''), 'Generale')))
+  AND EXISTS (
+    SELECT 1
+    FROM public.todo_shares s
+    WHERE s.owner_id = g.owner_id
+      AND (s.group_id IS NULL OR s.group_id = g.id)
+      -- Only an edit grant: filing a row into the group runs the same check the
+      -- trigger applies, and a read-only grant would make that UPDATE fail.
+      AND s.permission = 'edit'
+      AND (
+        s.shared_with_id = t.user_id
+        OR LOWER(s.shared_with_email) = LOWER(COALESCE((SELECT u.email FROM auth.users u WHERE u.id = t.user_id), ''))
+      )
+  );
+
+UPDATE public.notes n
+SET group_id = g.id
+FROM public.groups g
+WHERE n.group_id IS NULL
+  AND g.parent_id IS NULL
+  AND LOWER(g.name) = LOWER(trim(COALESCE(NULLIF(n.group_name, ''), 'Generale')))
+  AND EXISTS (
+    SELECT 1
+    FROM public.todo_shares s
+    WHERE s.owner_id = g.owner_id
+      AND (s.group_id IS NULL OR s.group_id = g.id)
+      AND s.permission = 'edit'
+      AND (
+        s.shared_with_id = n.user_id
+        OR LOWER(s.shared_with_email) = LOWER(COALESCE((SELECT u.email FROM auth.users u WHERE u.id = n.user_id), ''))
+      )
+  );
+
+INSERT INTO public.groups (owner_id, name)
+SELECT DISTINCT t.user_id, trim(t.group_name)
+FROM public.todos t
+WHERE t.group_id IS NULL
+  AND t.user_id IS NOT NULL
+  AND t.group_name IS NOT NULL
+  AND trim(t.group_name) <> ''
+  AND NOT EXISTS (
+    SELECT 1 FROM public.groups g
+    WHERE g.owner_id = t.user_id AND g.parent_id IS NULL AND LOWER(g.name) = LOWER(trim(t.group_name))
+  );
+
+INSERT INTO public.groups (owner_id, name)
+SELECT DISTINCT n.user_id, trim(n.group_name)
+FROM public.notes n
+WHERE n.group_id IS NULL
+  AND n.user_id IS NOT NULL
+  AND n.group_name IS NOT NULL
+  AND trim(n.group_name) <> ''
+  AND NOT EXISTS (
+    SELECT 1 FROM public.groups g
+    WHERE g.owner_id = n.user_id AND g.parent_id IS NULL AND LOWER(g.name) = LOWER(trim(n.group_name))
+  );
+
+UPDATE public.todos t
+SET group_id = g.id
+FROM public.groups g
+WHERE t.group_id IS NULL
+  AND g.owner_id = t.user_id
+  AND g.parent_id IS NULL
+  AND LOWER(g.name) = LOWER(trim(COALESCE(NULLIF(t.group_name, ''), 'Generale')));
+
+UPDATE public.notes n
+SET group_id = g.id
+FROM public.groups g
+WHERE n.group_id IS NULL
+  AND g.owner_id = n.user_id
+  AND g.parent_id IS NULL
+  AND LOWER(g.name) = LOWER(trim(COALESCE(NULLIF(n.group_name, ''), 'Generale')));
+
+-- 4. and the grants themselves point at their group
+UPDATE public.todo_shares s
+SET group_id = g.id
+FROM public.groups g
+WHERE s.group_id IS NULL
+  AND s.group_name IS NOT NULL
+  AND g.owner_id = s.owner_id
+  AND g.parent_id IS NULL
+  AND LOWER(g.name) = LOWER(trim(s.group_name));
+
+-- An empty name means the whole list (that is what the client writes as NULL, and
+-- an empty string only ever came from hand-written SQL).
+UPDATE public.todo_shares
+SET group_name = NULL
+WHERE group_name IS NOT NULL AND trim(group_name) = '';
+
+-- The one duplicate the old uniqueness index could not catch: a NULL and an empty
+-- name were different keys, so the same person could hold two whole-list grants.
+-- Keep the oldest; the removed row granted exactly what the surviving one does.
+DELETE FROM public.todo_shares s
+USING public.todo_shares keep
+WHERE s.group_id IS NULL
+  AND keep.group_id IS NULL
+  AND s.owner_id = keep.owner_id
+  AND LOWER(s.shared_with_email) = LOWER(keep.shared_with_email)
+  AND keep.id < s.id;
+
+-- Now that every grant has a group — or is deliberately whole-list — the
+-- uniqueness the app has always assumed (one grant per person and group) can be
+-- enforced on the id.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_todo_shares_unique_grant
+  ON public.todo_shares (owner_id, LOWER(shared_with_email), COALESCE(group_id, '00000000-0000-0000-0000-000000000000'::uuid));
+
+-- 5. anything still ungrouped (a row whose user_id is NULL, from before that column
+--    existed) lands in a default group as a last resort
+UPDATE public.todos t
+SET group_id = public.ensure_default_group(t.user_id)
+WHERE t.group_id IS NULL AND t.user_id IS NOT NULL;
+
+UPDATE public.notes n
+SET group_id = public.ensure_default_group(n.user_id)
+WHERE n.group_id IS NULL AND n.user_id IS NOT NULL;
+
+-- CHECK LIST — read-only, worth running once on your project after applying this
+-- file (the same three queries are asserted in supabase/verify-groups.sql):
+--   -- names the /g/<name>/<name> URL cannot carry
+--   SELECT id, name FROM public.groups WHERE position('/' IN name) > 0;
+--   -- grants that would widen into "the whole list"
+--   SELECT * FROM public.todo_shares WHERE group_name IS NOT NULL AND group_id IS NULL;
+--   -- activities and notes left without a group
+--   SELECT count(*) FROM public.todos WHERE group_id IS NULL;
+--   SELECT count(*) FROM public.notes WHERE group_id IS NULL;
+
+
+-- ==============================================================================
 -- 3. HELPERS USED BY THE POLICIES
 -- SECURITY DEFINER: they read `profiles`, which the caller may not be allowed to
 -- read (or, for an unapproved user, may not be allowed to read at all). Without
@@ -232,6 +821,10 @@ RETURNS BOOLEAN
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
   SELECT COALESCE((SELECT p.approved FROM public.profiles p WHERE p.id = uid), FALSE);
 $$;
+
+-- `public.can_access_group(owner, group_id, require_edit)` — the rule that decides
+-- whether a grant covers an item — is defined at the top of section 2.5, because
+-- the group triggers there need it before this point of the file is reached.
 
 
 -- ==============================================================================
@@ -399,6 +992,7 @@ ALTER TABLE public.todos       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notes       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.todo_shares ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.profiles    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.groups      ENABLE ROW LEVEL SECURITY;
 
 
 -- --------------------------------------------------------------- 5.1 todos
@@ -419,15 +1013,7 @@ USING (
   public.is_approved(auth.uid())
   AND (
     auth.uid() = user_id
-    OR EXISTS (
-      SELECT 1 FROM public.todo_shares s
-      WHERE s.owner_id = todos.user_id
-        AND (
-          s.shared_with_id = auth.uid()
-          OR LOWER(s.shared_with_email) = LOWER(auth.jwt() ->> 'email')
-        )
-        AND (s.group_name IS NULL OR s.group_name = COALESCE(todos.group_name, 'Generale'))
-    )
+    OR public.can_access_group(todos.user_id, todos.group_id)
   )
 );
 
@@ -449,16 +1035,7 @@ USING (
   public.is_approved(auth.uid())
   AND (
     auth.uid() = user_id
-    OR EXISTS (
-      SELECT 1 FROM public.todo_shares s
-      WHERE s.owner_id = todos.user_id
-        AND (
-          s.shared_with_id = auth.uid()
-          OR LOWER(s.shared_with_email) = LOWER(auth.jwt() ->> 'email')
-        )
-        AND (s.group_name IS NULL OR s.group_name = COALESCE(todos.group_name, 'Generale'))
-        AND s.permission = 'edit'
-    )
+    OR public.can_access_group(todos.user_id, todos.group_id, TRUE)
   )
 );
 
@@ -471,16 +1048,7 @@ USING (
   public.is_approved(auth.uid())
   AND (
     auth.uid() = user_id
-    OR EXISTS (
-      SELECT 1 FROM public.todo_shares s
-      WHERE s.owner_id = todos.user_id
-        AND (
-          s.shared_with_id = auth.uid()
-          OR LOWER(s.shared_with_email) = LOWER(auth.jwt() ->> 'email')
-        )
-        AND (s.group_name IS NULL OR s.group_name = COALESCE(todos.group_name, 'Generale'))
-        AND s.permission = 'edit'
-    )
+    OR public.can_access_group(todos.user_id, todos.group_id, TRUE)
   )
 );
 
@@ -501,15 +1069,7 @@ USING (
   public.is_approved(auth.uid())
   AND (
     auth.uid() = user_id
-    OR EXISTS (
-      SELECT 1 FROM public.todo_shares s
-      WHERE s.owner_id = notes.user_id
-        AND (
-          s.shared_with_id = auth.uid()
-          OR LOWER(s.shared_with_email) = LOWER(auth.jwt() ->> 'email')
-        )
-        AND (s.group_name IS NULL OR s.group_name = COALESCE(notes.group_name, 'Generale'))
-    )
+    OR public.can_access_group(notes.user_id, notes.group_id)
   )
 );
 
@@ -528,16 +1088,7 @@ USING (
   public.is_approved(auth.uid())
   AND (
     auth.uid() = user_id
-    OR EXISTS (
-      SELECT 1 FROM public.todo_shares s
-      WHERE s.owner_id = notes.user_id
-        AND (
-          s.shared_with_id = auth.uid()
-          OR LOWER(s.shared_with_email) = LOWER(auth.jwt() ->> 'email')
-        )
-        AND (s.group_name IS NULL OR s.group_name = COALESCE(notes.group_name, 'Generale'))
-        AND s.permission = 'edit'
-    )
+    OR public.can_access_group(notes.user_id, notes.group_id, TRUE)
   )
 );
 
@@ -548,16 +1099,7 @@ USING (
   public.is_approved(auth.uid())
   AND (
     auth.uid() = user_id
-    OR EXISTS (
-      SELECT 1 FROM public.todo_shares s
-      WHERE s.owner_id = notes.user_id
-        AND (
-          s.shared_with_id = auth.uid()
-          OR LOWER(s.shared_with_email) = LOWER(auth.jwt() ->> 'email')
-        )
-        AND (s.group_name IS NULL OR s.group_name = COALESCE(notes.group_name, 'Generale'))
-        AND s.permission = 'edit'
-    )
+    OR public.can_access_group(notes.user_id, notes.group_id, TRUE)
   )
 );
 
@@ -604,6 +1146,52 @@ TO authenticated
 USING (public.is_admin(auth.uid()));
 
 
+-- ----------------------------------------------------------- 5.5 groups
+-- The tree is yours to write; you may only ever *see* someone else's branch if it
+-- is covered by a grant they made to you — the same rule the items follow, which
+-- is what makes a shared sub-group show up with its name rather than as a bare id.
+DROP POLICY IF EXISTS "Users can view own or shared groups" ON public.groups;
+DROP POLICY IF EXISTS "Users can create own groups" ON public.groups;
+DROP POLICY IF EXISTS "Users can update own groups" ON public.groups;
+DROP POLICY IF EXISTS "Users can delete own groups" ON public.groups;
+
+CREATE POLICY "Users can view own or shared groups"
+ON public.groups FOR SELECT
+TO authenticated
+USING (
+  public.is_approved(auth.uid())
+  AND (
+    auth.uid() = owner_id
+    OR public.can_access_group(owner_id, id)
+  )
+);
+
+-- Anyone may build their own tree — including a sub-group under their own group.
+-- Not under someone else's: that is refused by the path trigger, which requires a
+-- sub-group to share its parent's owner.
+CREATE POLICY "Users can create own groups"
+ON public.groups FOR INSERT
+TO authenticated
+WITH CHECK (
+  public.is_approved(auth.uid())
+  AND auth.uid() = owner_id
+);
+
+CREATE POLICY "Users can update own groups"
+ON public.groups FOR UPDATE
+TO authenticated
+USING (public.is_approved(auth.uid()) AND auth.uid() = owner_id)
+WITH CHECK (public.is_approved(auth.uid()) AND auth.uid() = owner_id);
+
+-- Deleting a group takes its sub-groups with it (the foreign key cascades) and the
+-- activities inside land back in "Generale" (the foreign key sets their group_id to
+-- NULL and the trigger re-homes them) — so nothing is ever left invisible.
+CREATE POLICY "Users can delete own groups"
+ON public.groups FOR DELETE
+TO authenticated
+USING (public.is_approved(auth.uid()) AND auth.uid() = owner_id);
+
+
 -- ==============================================================================
 -- 6. PRIVILEGI TABELLARI (GRANT)
 -- Nota: una tabella creata tramite script / SQL Editor può non ricevere i GRANT
@@ -621,6 +1209,9 @@ GRANT USAGE ON SCHEMA public TO anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.todos       TO anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.notes       TO anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.todo_shares TO anon, authenticated;
+-- groups: the tree is read and written by signed-in users only — every policy on it
+-- is TO authenticated, so there is no anonymous path to grant.
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.groups      TO authenticated;
 -- profiles: read-only, and RLS restricts it to your own row (or everything, for admins).
 GRANT SELECT ON public.profiles TO authenticated;
 
@@ -631,6 +1222,26 @@ REVOKE ALL ON FUNCTION public.is_admin(UUID) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.is_approved(UUID) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.is_admin(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.is_approved(UUID) TO authenticated;
+
+-- Called from the policies, so the caller needs EXECUTE; it only ever answers
+-- questions about the caller's own grants, so handing it out is safe.
+REVOKE ALL ON FUNCTION public.can_access_group(UUID, UUID, BOOLEAN) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.can_access_group(UUID, UUID, BOOLEAN) TO authenticated;
+
+-- Takes the viewer as an argument, so it must not be reachable by a client: it
+-- would answer "does this other person have a grant on that group?".
+REVOKE ALL ON FUNCTION public.group_access_for(UUID, UUID, UUID, BOOLEAN) FROM PUBLIC, anon, authenticated;
+
+-- Everything below runs from a trigger or from this file, never from a client:
+-- no role needs EXECUTE on it. (Trigger invocation does not check EXECUTE, so
+-- revoking cannot break them.)
+REVOKE ALL ON FUNCTION public.groups_set_path()               FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.groups_cascade_path()           FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.groups_sync_item_names()        FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.items_set_group()               FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.shares_set_group()              FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.handle_new_user_groups()        FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.ensure_default_group(UUID)      FROM PUBLIC, anon, authenticated;
 
 REVOKE ALL ON FUNCTION public.admin_list_users() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.admin_set_password(UUID, TEXT) FROM PUBLIC, anon;
