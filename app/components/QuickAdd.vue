@@ -15,9 +15,15 @@ const props = withDefaults(defineProps<{
   focusSignal?: number
   /** Which composer to open with. */
   defaultMode?: 'todo' | 'note'
+  /** Text the composer starts from (the share page hands it the shared content). */
+  initialTitle?: string
 }>(), {
   defaultMode: 'todo'
 })
+
+const emit = defineEmits<{
+  (e: 'created'): void
+}>()
 
 const { addTodo, isAdding } = useTodos()
 
@@ -31,7 +37,10 @@ const modeOptions = [
 ]
 
 async function handleAddTodo(title: string, group: string) {
-  await addTodo(title, group)
+  const created = await addTodo(title, group)
+  if (created) {
+    emit('created')
+  }
 }
 </script>
 
@@ -50,6 +59,7 @@ async function handleAddTodo(title: string, group: string) {
       :available-groups="groups"
       :default-group="defaultGroup"
       :focus-signal="focusSignal"
+      :initial-title="initialTitle"
       @add="handleAddTodo"
     />
 
@@ -58,6 +68,8 @@ async function handleAddTodo(title: string, group: string) {
       :groups="groups"
       :default-group="defaultGroup"
       :focus-signal="focusSignal"
+      :initial-title="initialTitle"
+      @created="emit('created')"
     />
   </div>
 </template>

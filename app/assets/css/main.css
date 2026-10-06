@@ -291,6 +291,17 @@
       radial-gradient(40rem 24rem at 88% 2%, color-mix(in oklab, var(--accent-alt-500) 14%, transparent), transparent 72%);
   }
 
+  /* Decorative glows done with gradients instead of `filter: blur()` — same soft
+     falloff, but painted once rather than rasterised into a blurred layer every
+     time the element behind them repaints. Used by the hero card. */
+  .glow-white {
+    background-image: radial-gradient(closest-side, rgb(255 255 255 / 0.25), transparent);
+  }
+
+  .glow-accent {
+    background-image: radial-gradient(closest-side, color-mix(in oklab, var(--accent-300) 40%, transparent), transparent);
+  }
+
   .surface-card {
     background-color: #fff;
     border: 1px solid #e2e8f0;
@@ -302,16 +313,6 @@
     background-color: #0f172a;
     border-color: rgb(30 41 59 / 0.95);
     box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.3);
-  }
-
-  .surface-glass {
-    background-color: rgb(255 255 255 / 0.72);
-    backdrop-filter: blur(12px) saturate(1.4);
-  }
-
-  .dark .surface-glass,
-  :root.dark .surface-glass {
-    background-color: rgb(2 6 23 / 0.72);
   }
 
   /* Activity row: density- and size-aware. */
@@ -382,14 +383,8 @@
     animation: nt-fade 0.2s ease-out both;
   }
 
-  .anim-pop {
-    animation: nt-pop 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-
-  .anim-sheet {
-    animation: nt-sheet 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
-  }
-
+  /* `.anim-modal` is the only consumer of the nt-sheet / nt-pop keyframes above:
+     the dead `.anim-pop` and `.anim-sheet` utility classes were removed with it. */
   .anim-dropdown {
     animation: nt-dropdown 0.16s ease-out both;
   }

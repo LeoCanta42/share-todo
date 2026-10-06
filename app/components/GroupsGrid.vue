@@ -46,7 +46,7 @@ const totalNotes = computed(() =>
         v-for="card in cards"
         :key="card.name"
         :to="{ name: 'g-group', params: { group: card.name } }"
-        class="anim-rise group flex flex-col gap-2 rounded-2xl border border-slate-200/80 bg-white p-3 text-left transition-all hover:border-accent-500/50 hover:shadow-md focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none dark:border-slate-800 dark:bg-slate-900 dark:hover:border-accent-500/40"
+        class="anim-rise group flex flex-col gap-2 rounded-2xl border border-slate-200/80 bg-white p-3 text-left transition hover:border-accent-500/50 hover:shadow-md focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none dark:border-slate-800 dark:bg-slate-900 dark:hover:border-accent-500/40"
       >
         <span
           class="flex h-9 w-9 items-center justify-center rounded-xl"
@@ -75,7 +75,7 @@ const totalNotes = computed(() =>
       <!-- Notes have no group of their own, so they get their own card. -->
       <NuxtLink
         to="/notes"
-        class="anim-rise group flex flex-col gap-2 rounded-2xl border border-slate-200/80 bg-white p-3 text-left transition-all hover:border-accent-500/50 hover:shadow-md focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none dark:border-slate-800 dark:bg-slate-900 dark:hover:border-accent-500/40"
+        class="anim-rise group flex flex-col gap-2 rounded-2xl border border-slate-200/80 bg-white p-3 text-left transition hover:border-accent-500/50 hover:shadow-md focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none dark:border-slate-800 dark:bg-slate-900 dark:hover:border-accent-500/40"
       >
         <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
           <UIcon name="i-lucide-notebook-pen" class="h-4.5 w-4.5" />

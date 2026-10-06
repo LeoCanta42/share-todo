@@ -41,7 +41,7 @@ function select(id: string) {
       type="button"
       role="radio"
       :aria-checked="modelValue === option.id"
-      class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg whitespace-nowrap font-semibold transition-all focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+      class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg whitespace-nowrap font-semibold transition focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
       :class="[
         size === 'md' ? 'px-3.5 py-2 text-sm' : 'px-3 py-1.5 text-xs',
         modelValue === option.id

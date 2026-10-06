@@ -11,10 +11,20 @@ import { useQuickAdd } from '~/composables/useQuickAdd'
  */
 const { stats } = useNotes()
 const { availableGroups, selectedGroup } = useTodos()
-const { focusSignal } = useQuickAdd()
+const { focusSignal, focusQuickAdd } = useQuickAdd()
+
+const route = useRoute()
 
 // The notes page shows every note regardless of which group page was visited before.
 selectedGroup.value = 'all'
+
+onMounted(() => {
+  // Manifest shortcut: /notes?focus=new focuses the note composer, the same way
+  // /?focus=new focuses the quick-add bar on the overview.
+  if (route.query.focus === 'new') {
+    focusQuickAdd()
+  }
+})
 </script>
 
 <template>

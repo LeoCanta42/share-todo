@@ -100,11 +100,60 @@ export default defineNuxtConfig({
         { src: '/icons/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
       ],
       shortcuts: [
-        { name: 'Le mie attività', short_name: 'Attività', url: '/?focus=new' }
+        { name: 'Le mie attività', short_name: 'Attività', url: '/?focus=new' },
+        { name: 'Nuova nota', short_name: 'Nota', url: '/notes?focus=new' }
+      ],
+      // Long-pressing the icon offers the shortcuts above; `navigate-existing`
+      // reuses the window that is already open instead of stacking a second copy
+      // of the app (Android may otherwise end up with several).
+      launch_handler: { client_mode: 'navigate-existing' },
+      // "Share → ShareToDo" from another Android app opens /share with what was
+      // shared in the query string; see `middleware/share-target.global.ts`.
+      share_target: {
+        action: '/share',
+        method: 'GET',
+        params: {
+          title: 'title',
+          text: 'text',
+          url: 'url'
+        }
+      },
+      // Shown in Chrome's richer install sheet on Android. `form_factor: narrow`
+      // is what makes them count as phone screenshots.
+      screenshots: [
+        {
+          src: '/screenshots/attivita.png',
+          sizes: '780x1688',
+          type: 'image/png',
+          form_factor: 'narrow',
+          label: 'Attività, gruppi e avanzamento della giornata'
+        },
+        {
+          src: '/screenshots/gruppo.png',
+          sizes: '780x1688',
+          type: 'image/png',
+          form_factor: 'narrow',
+          label: 'Un gruppo con le sue attività e le sue note'
+        },
+        {
+          src: '/screenshots/note.png',
+          sizes: '780x1688',
+          type: 'image/png',
+          form_factor: 'narrow',
+          label: 'Le note, condivise per gruppo'
+        }
       ]
     },
     workbox: {
       globPatterns: ['**/*.{js,css,ico,png,svg,woff2}'],
+      /**
+       * Both folders below match the pattern above but must not be precached:
+       * - `/screenshots` are install-sheet artwork for the Android prompt (~680 KB),
+       * - `/splash` are the iOS launch screens (~500 KB). iOS fetches the single
+       *   image matching the device, and the image runtime cache below keeps it for
+       *   the next launch, so precaching all 24 would only slow the first visit.
+       */
+      globIgnores: ['**/screenshots/**', '**/splash/**'],
       navigateFallback: '/',
       navigateFallbackDenylist: [/^\/api/],
       cleanupOutdatedCaches: true,

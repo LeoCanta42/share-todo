@@ -64,7 +64,7 @@ const sortModel = computed({
           v-for="item in filterOptions"
           :key="item.id"
           type="button"
-          class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition-all focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+          class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
           :class="filter === item.id
             ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-900 dark:text-white'
             : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'"
@@ -104,7 +104,7 @@ const sortModel = computed({
           v-for="item in scopeOptions"
           :key="item.id"
           type="button"
-          class="rounded-md px-2.5 py-1 text-xs font-medium transition-all focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+          class="rounded-md px-2.5 py-1 text-xs font-medium transition focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
           :class="scope === item.id
             ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-900 dark:text-white'
             : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'"
@@ -127,7 +127,7 @@ const sortModel = computed({
           :value="searchQuery"
           type="search"
           placeholder="Cerca testo o gruppo…"
-          class="w-full rounded-xl border border-transparent bg-slate-100 py-1.5 pr-8 pl-8 text-base text-slate-900 transition-all placeholder-slate-400 focus:border-accent-500 focus:bg-white focus:outline-none sm:text-xs dark:bg-slate-800/80 dark:text-white dark:placeholder-slate-500 dark:focus:bg-slate-900"
+          class="w-full rounded-xl border border-transparent bg-slate-100 py-1.5 pr-8 pl-8 text-base text-slate-900 transition placeholder-slate-400 focus:border-accent-500 focus:bg-white focus:outline-none sm:text-xs dark:bg-slate-800/80 dark:text-white dark:placeholder-slate-500 dark:focus:bg-slate-900"
           aria-label="Cerca attività"
           @input="searchQuery = ($event.target as HTMLInputElement).value"
         >

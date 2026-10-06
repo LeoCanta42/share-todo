@@ -42,7 +42,7 @@ function openDetail() {
 </script>
 
 <template>
-  <article class="todo-row group relative flex items-start gap-3 rounded-2xl border border-slate-200/80 bg-white p-3.5 transition-all hover:border-accent-500/40 hover:shadow-md dark:border-slate-800 dark:bg-slate-900 dark:hover:border-accent-500/30">
+  <article class="todo-row group relative flex items-start gap-3 rounded-2xl border border-slate-200/80 bg-white p-3.5 transition hover:border-accent-500/40 hover:shadow-md dark:border-slate-800 dark:bg-slate-900 dark:hover:border-accent-500/30">
     <span
       class="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl"
       :class="groupMeta.colorClass"

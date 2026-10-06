@@ -8,6 +8,8 @@ import { useAppearance } from '~/composables/useAppearance'
 import { usePwa } from '~/composables/usePwa'
 import { useQuickAdd } from '~/composables/useQuickAdd'
 import { useShareDialog } from '~/composables/useShareDialog'
+import { useAppBadge } from '~/composables/useAppBadge'
+import { appleSplashLinks } from '~/utils/appleSplash'
 
 useSeoMeta({
   title: 'ShareToDo — Attività e condivisione',
@@ -19,7 +21,7 @@ useSeoMeta({
 
 const { user, logout } = useAuth()
 const { myShares, loadShares } = useShares()
-const { todos, loadTodos } = useTodos()
+const { todos, stats, loadTodos } = useTodos()
 const { notes, loadNotes } = useNotes()
 const { status: approvalStatus, isAdmin, isApproved, loadProfile, resetProfile } = useProfile()
 const { needRefresh, offlineReady, updateApp } = usePwa()
@@ -29,6 +31,15 @@ const { open: isShareModalOpen, targetGroup: shareTarget, openShare } = useShare
 // Projects the stored preferences onto <html> (accent, density, text size) and
 // keeps the browser/PWA theme colour in step with the chosen accent.
 useAppearance()
+
+// Icon badge of the installed app: how many activities are still to do. Lives in
+// the shell rather than on a page so it is right whatever page you are on — and 0
+// while signed out (which is what clears it).
+useAppBadge(() => (user.value && isApproved.value ? stats.value.active : 0))
+
+// iOS launch screens: what the OS paints instead of a white flash while the
+// installed app boots. One <link> per device size, selected by a media query.
+useHead({ link: appleSplashLinks })
 
 const toast = useToast()
 

@@ -140,7 +140,7 @@ onBeforeUnmount(() => {
     >
       <div
         v-if="open"
-        class="fixed inset-0 flex items-end justify-center bg-slate-950/55 backdrop-blur-sm sm:items-center sm:p-4"
+        class="fixed inset-0 flex items-end justify-center bg-slate-950/55 sm:items-center sm:p-4"
         :style="{ zIndex }"
         role="presentation"
         @click="onBackdrop"

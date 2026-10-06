@@ -80,6 +80,61 @@ export const DEFAULT_PREFERENCES: Preferences = {
 
 const COOKIE_KEY = 'nt_prefs'
 
+export function normalize(raw: Partial<Preferences> | null | undefined): Preferences {
+  const value = raw ?? {}
+  return {
+    accent: ACCENTS.some(a => a.id === value.accent) ? value.accent as AccentId : DEFAULT_PREFERENCES.accent,
+    density: DENSITIES.some(d => d.id === value.density) ? value.density as Density : DEFAULT_PREFERENCES.density,
+    textSize: TEXT_SIZES.some(t => t.id === value.textSize) ? value.textSize as TextSize : DEFAULT_PREFERENCES.textSize,
+    sort: SORT_ORDERS.some(s => s.id === value.sort) ? value.sort as SortOrder : DEFAULT_PREFERENCES.sort,
+    groupSections: value.groupSections ?? DEFAULT_PREFERENCES.groupSections,
+    confirmDelete: value.confirmDelete ?? DEFAULT_PREFERENCES.confirmDelete,
+    hideCompleted: value.hideCompleted ?? DEFAULT_PREFERENCES.hideCompleted,
+    customGroups: Array.isArray(value.customGroups) ? value.customGroups.filter(g => typeof g === 'string') : [],
+    removedGroups: Array.isArray(value.removedGroups) ? value.removedGroups.filter(g => typeof g === 'string') : [],
+    groupStyles: value.groupStyles && typeof value.groupStyles === 'object' ? value.groupStyles : {}
+  }
+}
+
+/**
+ * The one shared preferences store, created once per app (see
+ * `plugins/preferences.ts`) and injected as `$preferences`.
+ *
+ * Read from the whole app: one cookie ref, one deep watcher and one normalised
+ * `computed` for every consumer. Calling `useCookie()` inside `usePreferences()`
+ * instead — the previous shape — meant the cookie was re-created for *every*
+ * caller, and since `TodoItem` calls it once per row that was one
+ * `BroadcastChannel`, one deep watcher, one cookie-jar parse and one deep clone
+ * of the whole preferences object *per activity*. Linear in the list length,
+ * exactly where a phone feels it most.
+ */
+export interface PreferencesStore {
+  /** Cookie-backed source of truth. Writability is what `update`/`patch` use. */
+  stored: Ref<Preferences>
+  /** Normalised view of `stored`. */
+  prefs: ComputedRef<Preferences>
+  accentOption: ComputedRef<AccentOption>
+}
+
+export function createPreferencesStore(): PreferencesStore {
+  const stored = useCookie<Preferences>(COOKIE_KEY, {
+    default: () => ({ ...DEFAULT_PREFERENCES }),
+    maxAge: 60 * 60 * 24 * 365,
+    sameSite: 'lax',
+    path: '/'
+  })
+
+  const prefs = computed<Preferences>(() => normalize(stored.value))
+
+  return {
+    stored,
+    prefs,
+    accentOption: computed<AccentOption>(
+      () => ACCENTS.find(a => a.id === prefs.value.accent) ?? ACCENTS[0]!
+    )
+  }
+}
+
 /**
  * User preferences.
  *
@@ -88,42 +143,21 @@ const COOKIE_KEY = 'nt_prefs'
  * paint already correct instead of flashing the default theme on every load.
  */
 export function usePreferences() {
-  const prefs = useCookie<Preferences>(COOKIE_KEY, {
-    default: () => ({ ...DEFAULT_PREFERENCES }),
-    maxAge: 60 * 60 * 24 * 365,
-    sameSite: 'lax',
-    path: '/'
-  })
-
-  function normalize(raw: Partial<Preferences> | null | undefined): Preferences {
-    const value = raw ?? {}
-    return {
-      accent: ACCENTS.some(a => a.id === value.accent) ? value.accent as AccentId : DEFAULT_PREFERENCES.accent,
-      density: DENSITIES.some(d => d.id === value.density) ? value.density as Density : DEFAULT_PREFERENCES.density,
-      textSize: TEXT_SIZES.some(t => t.id === value.textSize) ? value.textSize as TextSize : DEFAULT_PREFERENCES.textSize,
-      sort: SORT_ORDERS.some(s => s.id === value.sort) ? value.sort as SortOrder : DEFAULT_PREFERENCES.sort,
-      groupSections: value.groupSections ?? DEFAULT_PREFERENCES.groupSections,
-      confirmDelete: value.confirmDelete ?? DEFAULT_PREFERENCES.confirmDelete,
-      hideCompleted: value.hideCompleted ?? DEFAULT_PREFERENCES.hideCompleted,
-      customGroups: Array.isArray(value.customGroups) ? value.customGroups.filter(g => typeof g === 'string') : [],
-      removedGroups: Array.isArray(value.removedGroups) ? value.removedGroups.filter(g => typeof g === 'string') : [],
-      groupStyles: value.groupStyles && typeof value.groupStyles === 'object' ? value.groupStyles : {}
-    }
-  }
+  const { stored, prefs, accentOption } = useNuxtApp().$preferences
 
   function update<K extends keyof Preferences>(key: K, value: Preferences[K]) {
-    prefs.value = { ...normalize(prefs.value), [key]: value }
+    stored.value = { ...normalize(stored.value), [key]: value }
   }
 
   /** Merge a partial change into the stored preferences. */
   function patch(changes: Partial<Preferences>) {
-    prefs.value = normalize({ ...normalize(prefs.value), ...changes })
+    stored.value = normalize({ ...normalize(stored.value), ...changes })
   }
 
   function setGroupStyle(name: string, style: Partial<GroupStyle>) {
     const clean = (name || '').trim()
     if (!clean) return
-    const current = normalize(prefs.value)
+    const current = normalize(stored.value)
     update('groupStyles', {
       ...current.groupStyles,
       [clean]: {
@@ -179,16 +213,11 @@ export function usePreferences() {
   }
 
   function reset() {
-    prefs.value = { ...DEFAULT_PREFERENCES, customGroups: [], groupStyles: {} }
+    stored.value = { ...DEFAULT_PREFERENCES, customGroups: [], groupStyles: {} }
   }
 
-  const normalized = computed<Preferences>(() => normalize(prefs.value))
-  const accentOption = computed<AccentOption>(
-    () => ACCENTS.find(a => a.id === normalized.value.accent) ?? ACCENTS[0]!
-  )
-
   return {
-    prefs: normalized,
+    prefs,
     accentOption,
     update,
     patch,

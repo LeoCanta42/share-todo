@@ -12,14 +12,20 @@ const props = withDefaults(defineProps<{
   groups: string[]
   defaultGroup?: string
   focusSignal?: number
+  /** Text to start from — set by the share page, empty everywhere else. */
+  initialTitle?: string
 }>(), {
   defaultGroup: 'Generale'
 })
 
+const emit = defineEmits<{
+  (e: 'created'): void
+}>()
+
 const { addNote, isSaving } = useNotes()
 const { groupMeta } = useTodos()
 
-const title = ref('')
+const title = ref((props.initialTitle ?? '').trim())
 const body = ref('')
 const group = ref(props.defaultGroup || 'Generale')
 const titleRef = ref<HTMLInputElement | null>(null)
@@ -58,6 +64,7 @@ async function submit() {
 
   const created = await addNote(title.value, body.value, group.value)
   if (created) {
+    emit('created')
     title.value = ''
     body.value = ''
     nextTick(() => titleRef.value?.focus())
@@ -67,7 +74,7 @@ async function submit() {
 
 <template>
   <form
-    class="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm transition-all focus-within:border-accent-500 focus-within:ring-2 focus-within:ring-accent-500/25 dark:border-slate-800 dark:bg-slate-900"
+    class="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm transition focus-within:border-accent-500 focus-within:ring-2 focus-within:ring-accent-500/25 dark:border-slate-800 dark:bg-slate-900"
     @submit.prevent="submit"
   >
     <div class="space-y-2">

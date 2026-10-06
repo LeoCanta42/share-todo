@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import type { Todo } from '~/types/todo'
 import { formatFullDate } from '~/utils/date'
+import { haptic } from '~/utils/haptics'
 import { usePreferences, TEXT_SIZES } from '~/composables/usePreferences'
+import { useWebShare } from '~/composables/useWebShare'
 
 /**
  * Reading view for a single activity.
@@ -89,6 +91,21 @@ async function copyText() {
   } catch (error) {
     console.error('Clipboard unavailable:', error)
   }
+}
+
+const { canShare, share } = useWebShare()
+
+/** Hand the activity to another app — the phone's share sheet, or the clipboard. */
+async function shareTodo() {
+  if (!props.todo) return
+  await share({ text: props.todo.title })
+}
+
+/** Completing from the dialog should feel the same as completing from the row. */
+function toggleComplete() {
+  if (!props.todo) return
+  haptic(12)
+  emit('toggle', props.todo)
 }
 
 watch(() => props.open, (open) => {
@@ -232,7 +249,7 @@ watch([() => draftTitle.value, () => isEditing.value], () => {
           size="md"
           icon="i-lucide-check"
           class="rounded-xl font-semibold"
-          @click="emit('toggle', todo)"
+          @click="toggleComplete"
         >
           {{ todo.completed ? 'Segna da fare' : 'Segna completata' }}
         </UButton>
@@ -279,6 +296,16 @@ watch([() => draftTitle.value, () => isEditing.value], () => {
               class="rounded-xl"
               :aria-label="'Copia il testo'"
               @click="copyText"
+            />
+            <UButton
+              v-if="canShare"
+              color="neutral"
+              variant="soft"
+              size="md"
+              icon="i-lucide-share-2"
+              class="rounded-xl"
+              :aria-label="'Condividi il testo'"
+              @click="shareTodo"
             />
             <UButton
               v-if="canEdit"

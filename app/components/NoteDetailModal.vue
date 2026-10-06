@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Note } from '~/types/note'
 import { formatFullDate } from '~/utils/date'
+import { useWebShare } from '~/composables/useWebShare'
 
 /**
  * Reading and editing view for a single note — the note counterpart of
@@ -93,6 +94,14 @@ async function copyText() {
   } catch (error) {
     console.error('Clipboard unavailable:', error)
   }
+}
+
+const { canShare, share } = useWebShare()
+
+/** Hand the note to another app — the phone's share sheet, or the clipboard. */
+async function shareNote() {
+  if (!props.note) return
+  await share({ title: props.note.title, text: props.note.body })
 }
 
 watch(() => props.open, (open) => {
@@ -259,6 +268,16 @@ watch(() => props.open, (open) => {
               class="rounded-xl"
               aria-label="Copia il testo della nota"
               @click="copyText"
+            />
+            <UButton
+              v-if="canShare"
+              color="neutral"
+              variant="soft"
+              size="md"
+              icon="i-lucide-share-2"
+              class="rounded-xl"
+              aria-label="Condividi la nota"
+              @click="shareNote"
             />
             <UButton
               v-if="canEdit"

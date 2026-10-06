@@ -86,7 +86,11 @@ const collaborators = computed(() => props.collaboratorsCount ?? 0)
 </script>
 
 <template>
-  <header class="sticky top-0 z-30 w-full border-b border-slate-200/80 bg-white/90 backdrop-blur-sm transition-colors pt-safe dark:border-slate-800/80 dark:bg-slate-950/90">
+  <!-- Opaque, not a translucent bar with a backdrop filter: a sticky bar behind a
+       filter makes the browser re-blur everything scrolling underneath it on every
+       frame, which is the single most expensive thing you can put above a long list
+       on a phone. A solid bar costs nothing to composite. -->
+  <header class="sticky top-0 z-30 w-full border-b border-slate-200/80 bg-white pt-safe dark:border-slate-800/80 dark:bg-slate-950">
     <div class="mx-auto flex h-16 max-w-3xl items-center justify-between gap-2 px-4 sm:px-6">
       <!-- Brand -->
       <NuxtLink to="/" class="flex min-w-0 items-center gap-2.5" aria-label="ShareToDo — vai alla panoramica">

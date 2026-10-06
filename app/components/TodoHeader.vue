@@ -48,13 +48,15 @@ const dashOffset = computed(() => CIRCUMFERENCE * (1 - props.stats.percentage / 
 
 <template>
   <section class="anim-rise relative overflow-hidden rounded-3xl gradient-accent-strong p-5 text-white shadow-xl shadow-accent-950/20 sm:p-7">
-    <!-- Decorative glows -->
-    <div class="pointer-events-none absolute -top-10 -right-10 h-48 w-48 rounded-full bg-white/15 blur-2xl" />
-    <div class="pointer-events-none absolute -bottom-14 -left-10 h-52 w-52 rounded-full bg-accent-300/25 blur-3xl" />
+    <!-- Decorative glows: radial gradients rather than `filter: blur()` circles, so
+         the hero paints them once instead of rasterising a blurred layer (which it
+         had to redo every time the card was repainted). -->
+    <div class="pointer-events-none absolute -top-10 -right-10 h-48 w-48 rounded-full glow-white" />
+    <div class="pointer-events-none absolute -bottom-14 -left-10 h-52 w-52 rounded-full glow-accent" />
 
     <div class="relative z-10 flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
       <div class="min-w-0">
-        <div class="mb-3 inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-xs font-medium text-white/90 backdrop-blur-sm">
+        <div class="mb-3 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-3 py-1 text-xs font-medium text-white/90">
           <UIcon name="i-lucide-calendar" class="h-3.5 w-3.5" />
           <span>{{ formattedToday }}</span>
         </div>
@@ -80,7 +82,7 @@ const dashOffset = computed(() => CIRCUMFERENCE * (1 - props.stats.percentage / 
               stroke="currentColor"
               stroke-width="6"
               stroke-linecap="round"
-              class="text-white transition-all duration-700 ease-out"
+              class="text-white transition-[stroke-dashoffset] duration-700 ease-out"
               :stroke-dasharray="CIRCUMFERENCE"
               :stroke-dashoffset="dashOffset"
             />
@@ -92,11 +94,11 @@ const dashOffset = computed(() => CIRCUMFERENCE * (1 - props.stats.percentage / 
         </div>
 
         <div class="flex items-center gap-2.5">
-          <div class="min-w-[68px] rounded-2xl border border-white/10 bg-white/15 px-3 py-2.5 text-center backdrop-blur-md">
+          <div class="min-w-[68px] rounded-2xl border border-white/10 bg-white/20 px-3 py-2.5 text-center">
             <div class="text-xl font-extrabold leading-none">{{ stats.active }}</div>
             <div class="mt-1 text-[10px] font-medium tracking-wider text-white/80 uppercase">Da fare</div>
           </div>
-          <div class="min-w-[68px] rounded-2xl border border-white/10 bg-white/15 px-3 py-2.5 text-center backdrop-blur-md">
+          <div class="min-w-[68px] rounded-2xl border border-white/10 bg-white/20 px-3 py-2.5 text-center">
             <div class="text-xl font-extrabold leading-none">{{ stats.completed }}</div>
             <div class="mt-1 text-[10px] font-medium tracking-wider text-white/80 uppercase">Fatte</div>
           </div>

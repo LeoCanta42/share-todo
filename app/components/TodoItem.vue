@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Todo } from '~/types/todo'
 import { formatDate } from '~/utils/date'
+import { haptic } from '~/utils/haptics'
 import type { GroupMeta } from '~/utils/groups'
 import { usePreferences } from '~/composables/usePreferences'
 
@@ -100,11 +101,20 @@ function openDetail() {
   if (import.meta.client && (window.getSelection()?.toString()?.length ?? 0) > 0) return
   emit('openDetail', props.todo)
 }
+
+/**
+ * Completing an activity is the tap worth feeling. `haptic()` is a no-op on iOS
+ * (and anywhere haptics are off), so nothing depends on it.
+ */
+function toggleComplete() {
+  haptic(12)
+  emit('toggle', props.todo)
+}
 </script>
 
 <template>
   <article
-    class="todo-row group relative flex items-start rounded-2xl border transition-all duration-200"
+    class="todo-row group relative flex items-start rounded-2xl border transition duration-200"
     :class="[
       todo.completed
         ? 'border-slate-200/70 bg-slate-50/80 dark:border-slate-800/70 dark:bg-slate-900/40'
@@ -118,14 +128,14 @@ function openDetail() {
       role="checkbox"
       :aria-checked="Boolean(todo.completed)"
       :aria-label="todo.completed ? `Segna come da fare: ${shortTitle}` : `Segna come completata: ${shortTitle}`"
-      class="mt-0.5 flex h-5.5 w-5.5 flex-shrink-0 items-center justify-center rounded-lg border transition-all duration-150 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+      class="mt-0.5 flex h-5.5 w-5.5 flex-shrink-0 items-center justify-center rounded-lg border transition duration-150 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
       :class="[
         todo.completed
           ? 'border-accent-500 bg-accent-500 text-white'
           : 'border-slate-300 bg-white hover:border-accent-500 dark:border-slate-600 dark:bg-slate-800 dark:hover:border-accent-400'
       ]"
       :disabled="isPending || !canEdit"
-      @click="emit('toggle', todo)"
+      @click="toggleComplete"
     >
       <UIcon
         name="i-lucide-check"

@@ -15,6 +15,8 @@ const props = defineProps<{
   defaultGroup?: string
   /** Bumped by the FAB / empty state to focus the field. */
   focusSignal?: number
+  /** Text to start from — set by the share page, empty everywhere else. */
+  initialTitle?: string
 }>()
 
 const emit = defineEmits<{
@@ -23,7 +25,7 @@ const emit = defineEmits<{
 
 const { groupMeta, addGroup } = useTodos()
 
-const inputTitle = ref('')
+const inputTitle = ref((props.initialTitle ?? '').trim())
 const selectedGroup = ref(props.defaultGroup || 'Generale')
 const isPickerOpen = ref(false)
 const customGroupInput = ref('')
@@ -68,6 +70,12 @@ function autosize() {
 }
 
 watch(inputTitle, () => nextTick(autosize))
+
+// A composer pre-filled with shared text (the share page) must show all of it
+// without waiting for the first keystroke.
+onMounted(() => {
+  if (inputTitle.value) nextTick(autosize)
+})
 
 function selectGroup(name: string) {
   selectedGroup.value = name
@@ -120,7 +128,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="space-y-2">
     <form
-      class="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm transition-all focus-within:border-accent-500 focus-within:ring-2 focus-within:ring-accent-500/25 dark:border-slate-800 dark:bg-slate-900"
+      class="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm transition focus-within:border-accent-500 focus-within:ring-2 focus-within:ring-accent-500/25 dark:border-slate-800 dark:bg-slate-900"
       @submit.prevent="handleSubmit"
     >
       <div class="flex items-start gap-2 px-1.5 pt-1">
@@ -148,7 +156,7 @@ onBeforeUnmount(() => {
         <div ref="pickerRef" class="relative">
           <button
             type="button"
-            class="inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-semibold shadow-xs transition-all hover:opacity-90 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+            class="inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-semibold shadow-xs transition hover:opacity-90 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
             :class="activeGroupMeta.colorClass"
             :aria-expanded="isPickerOpen"
             aria-haspopup="listbox"
@@ -181,7 +189,7 @@ onBeforeUnmount(() => {
                 type="button"
                 role="option"
                 :aria-selected="selectedGroup === group"
-                class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium transition-all focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+                class="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium transition focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
                 :class="selectedGroup === group
                   ? 'border-transparent bg-accent-50 text-accent-700 ring-2 ring-accent-500 dark:bg-accent-950 dark:text-accent-300'
                   : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-800/60 dark:text-slate-300'"
