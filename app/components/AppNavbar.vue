@@ -6,20 +6,43 @@ import { usePwa } from '~/composables/usePwa'
 const props = defineProps<{
   user?: { email?: string } | null
   collaboratorsCount?: number
-  refreshing?: boolean
+  isAdmin?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'openShare'): void
   (e: 'openSettings'): void
   (e: 'logout'): void
-  (e: 'refresh'): void
 }>()
 
 const { theme, setTheme, isDark } = useAppearance()
 const { canInstall, isInstalled, needRefresh, install, updateApp } = usePwa()
 
+const route = useRoute()
+
 const isDarkTheme = computed(() => isDark.value)
+
+/**
+ * The app is split into routed pages, so the header carries the navigation: the
+ * list of activities, the notes, and — only for an admin — the user management page.
+ */
+const links = computed(() => {
+  const items = [
+    { label: 'Attività', to: '/', icon: 'i-lucide-list-checks' },
+    { label: 'Note', to: '/notes', icon: 'i-lucide-notebook-pen' }
+  ]
+
+  if (props.isAdmin) {
+    items.push({ label: 'Admin', to: '/admin', icon: 'i-lucide-shield-check' })
+  }
+
+  return items
+})
+
+function isActive(to: string): boolean {
+  if (to === '/') return route.path === '/'
+  return route.path === to || route.path.startsWith(`${to}/`)
+}
 
 const themeItems = computed<DropdownMenuItem[][]>(() => [[
   { label: 'Tema chiaro', icon: 'i-lucide-sun', type: 'checkbox', checked: theme.value === 'light', onSelect: () => setTheme('light') },
@@ -34,12 +57,17 @@ const menuItems = computed<DropdownMenuItem[][]>(() => {
     { label: props.user?.email ?? 'Account', type: 'label' }
   ])
 
-  groups.push([
-    { label: 'Aggiorna attività', icon: 'i-lucide-refresh-cw', onSelect: () => emit('refresh'), disabled: props.refreshing },
+  const actions: DropdownMenuItem[] = [
     { label: 'Personalizza', icon: 'i-lucide-sliders-horizontal', onSelect: () => emit('openSettings') },
     { label: 'Condividi', icon: 'i-lucide-share-2', onSelect: () => emit('openShare') },
     { label: 'Installa app', icon: 'i-lucide-download', onSelect: () => install(), disabled: !canInstall.value }
-  ])
+  ]
+
+  if (props.isAdmin) {
+    actions.push({ label: 'Amministrazione', icon: 'i-lucide-shield-check', onSelect: () => navigateTo('/admin') })
+  }
+
+  groups.push(actions)
 
   groups.push([
     { label: 'Disconnetti', icon: 'i-lucide-log-out', color: 'error', onSelect: () => emit('logout') }
@@ -61,7 +89,7 @@ const collaborators = computed(() => props.collaboratorsCount ?? 0)
   <header class="sticky top-0 z-30 w-full border-b border-slate-200/80 bg-white/90 backdrop-blur-sm transition-colors pt-safe dark:border-slate-800/80 dark:bg-slate-950/90">
     <div class="mx-auto flex h-16 max-w-3xl items-center justify-between gap-2 px-4 sm:px-6">
       <!-- Brand -->
-      <div class="flex min-w-0 items-center gap-2.5">
+      <NuxtLink to="/" class="flex min-w-0 items-center gap-2.5" aria-label="ShareToDo — vai alla panoramica">
         <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl gradient-accent text-white shadow-md shadow-accent-600/25">
           <UIcon name="i-lucide-check" class="h-5 w-5" />
         </div>
@@ -73,9 +101,27 @@ const collaborators = computed(() => props.collaboratorsCount ?? 0)
             Attività e condivisione
           </p>
         </div>
-      </div>
+      </NuxtLink>
 
       <div class="flex items-center gap-1 sm:gap-1.5">
+        <!-- Section navigation -->
+        <nav v-if="user" class="flex items-center gap-0.5" aria-label="Sezioni">
+          <NuxtLink
+            v-for="link in links"
+            :key="link.to"
+            :to="link.to"
+            class="inline-flex h-8 items-center gap-1.5 rounded-xl px-2 text-xs font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none sm:px-2.5"
+            :class="isActive(link.to)
+              ? 'bg-accent-100 text-accent-800 dark:bg-accent-950/70 dark:text-accent-200'
+              : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white'"
+            :aria-current="isActive(link.to) ? 'page' : undefined"
+            :title="link.label"
+          >
+            <UIcon :name="link.icon" class="h-4 w-4" />
+            <span class="hidden md:inline">{{ link.label }}</span>
+          </NuxtLink>
+        </nav>
+
         <!-- New version available -->
         <UButton
           v-if="needRefresh"
@@ -103,20 +149,6 @@ const collaborators = computed(() => props.collaboratorsCount ?? 0)
           <span class="hidden sm:inline">Installa</span>
         </UButton>
 
-        <!-- Refresh -->
-        <UButton
-          v-if="user"
-          variant="ghost"
-          color="neutral"
-          size="sm"
-          icon="i-lucide-refresh-cw"
-          class="rounded-xl"
-          :class="{ 'animate-spin': refreshing }"
-          :disabled="refreshing"
-          aria-label="Aggiorna attività"
-          title="Aggiorna attività"
-          @click="emit('refresh')"
-        />
         <!-- Share -->
         <UButton
           v-if="user"

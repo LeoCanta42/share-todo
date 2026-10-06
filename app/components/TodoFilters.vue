@@ -2,11 +2,13 @@
 import { SORT_ORDERS, usePreferences } from '~/composables/usePreferences'
 
 /**
- * Filter toolbar: status tabs, origin (mine/shared), group chips, search and sort.
+ * Filter toolbar: status tabs, origin (mine/shared), search and sort.
  *
- * Deliberately not sticky: on a phone the bar is three rows tall, so pinning it
- * would eat a third of the viewport — the floating action button covers quick
- * access to the top of the page instead.
+ * The group chips that used to live here are gone: picking a group now opens that
+ * group's own page, so a chip in the toolbar — narrowing the list you were already
+ * reading, with no indication of which group you had landed in — was the confusing
+ * part. The counts below follow `scopedStats`, so on a group page they describe the
+ * group, not the whole workspace.
  */
 const emit = defineEmits<{
   (e: 'clearCompleted'): void
@@ -15,24 +17,20 @@ const emit = defineEmits<{
 const {
   filter,
   scope,
-  selectedGroup,
   searchQuery,
-  stats,
-  availableGroups,
-  groupStats,
-  groupMeta,
-  isShared,
-  todos
+  scopedStats,
+  scopedTodos,
+  isShared
 } = useTodos()
 
 const { prefs, update } = usePreferences()
 
-const hasSharedTasks = computed(() => todos.value.some(t => isShared(t)))
+const hasSharedTasks = computed(() => scopedTodos.value.some(t => isShared(t)))
 
 const filterOptions = computed(() => [
-  { id: 'all', label: 'Tutti', count: stats.value.total },
-  { id: 'active', label: 'Da fare', count: stats.value.active },
-  { id: 'completed', label: 'Fatti', count: stats.value.completed }
+  { id: 'all', label: 'Tutti', count: scopedStats.value.total },
+  { id: 'active', label: 'Da fare', count: scopedStats.value.active },
+  { id: 'completed', label: 'Fatti', count: scopedStats.value.completed }
 ])
 
 const scopeOptions = [
@@ -41,19 +39,13 @@ const scopeOptions = [
   { id: 'shared', label: 'Condivisi' }
 ]
 
-/** Only groups that actually hold activities are worth a chip. */
-const activeGroupsWithTasks = computed(() =>
-  availableGroups.value.filter(g => (groupStats.value[g]?.total ?? 0) > 0 || selectedGroup.value === g)
-)
-
 const hasActiveFilters = computed(() =>
-  filter.value !== 'all' || scope.value !== 'all' || selectedGroup.value !== 'all' || searchQuery.value.trim() !== ''
+  filter.value !== 'all' || scope.value !== 'all' || searchQuery.value.trim() !== ''
 )
 
 function clearFilters() {
   filter.value = 'all'
   scope.value = 'all'
-  selectedGroup.value = 'all'
   searchQuery.value = ''
 }
 
@@ -124,44 +116,6 @@ const sortModel = computed({
       </div>
     </div>
 
-    <!-- Group chips -->
-    <div v-if="activeGroupsWithTasks.length > 0" class="flex items-center gap-1.5 pb-0.5">
-      <span class="todo-meta mr-1 font-semibold tracking-wider whitespace-nowrap text-slate-400 uppercase dark:text-slate-500">
-        Gruppo
-      </span>
-
-      <div class="flex min-w-0 flex-1 gap-1.5 overflow-x-auto pb-1 pt-1 scrollbar-none">
-        <button
-          type="button"
-          class="inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-semibold whitespace-nowrap transition-all focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
-          :class="selectedGroup === 'all'
-            ? 'border-transparent bg-slate-900 text-white shadow-xs dark:bg-white dark:text-slate-900'
-            : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400 dark:hover:border-slate-700'"
-          :aria-pressed="selectedGroup === 'all'"
-          @click="selectedGroup = 'all'"
-        >
-          <span>Tutti</span>
-          <span class="text-[10px] opacity-75">({{ stats.total }})</span>
-        </button>
-
-        <button
-          v-for="group in activeGroupsWithTasks"
-          :key="group"
-          type="button"
-          class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold whitespace-nowrap transition-all focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
-          :class="selectedGroup === group
-            ? `border-transparent ring-2 ring-accent-500 ${groupMeta(group).colorClass}`
-            : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400 dark:hover:border-slate-700'"
-          :aria-pressed="selectedGroup === group"
-          @click="selectedGroup = group"
-        >
-          <UIcon :name="groupMeta(group).icon" class="h-3.5 w-3.5" />
-          <span>{{ group }}</span>
-          <span class="text-[10px] opacity-75">({{ groupStats[group]?.total || 0 }})</span>
-        </button>
-      </div>
-    </div>
-
     <!-- Search, sort, cleanup -->
     <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
       <div class="relative flex-1">
@@ -217,7 +171,7 @@ const sortModel = computed({
         </button>
 
         <UButton
-          v-if="stats.completed > 0"
+          v-if="scopedStats.completed > 0"
           color="error"
           variant="ghost"
           size="xs"

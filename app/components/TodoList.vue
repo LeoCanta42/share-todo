@@ -21,7 +21,7 @@ const emit = defineEmits<{
   (e: 'updateGroup', id: number, newGroup: string): void
   (e: 'delete', id: number): void
   (e: 'openDetail', todo: Todo): void
-  (e: 'filterGroup', group: string): void
+  (e: 'openGroup', group: string): void
   (e: 'clearFilters'): void
   (e: 'create'): void
 }>()
@@ -33,20 +33,25 @@ const {
   activeActionId,
   filter,
   scope,
-  selectedGroup,
   searchQuery,
   availableGroups,
-  stats,
+  scopedStats,
   isShared,
   groupMeta
 } = useTodos()
 
 const { prefs } = usePreferences()
-const { todoPermission } = useShares()
+const { permissionFor } = useShares()
 
 const useSections = computed(() => prefs.value.sort === 'group' && prefs.value.groupSections)
+
+/**
+ * The group is deliberately not part of this: on `/g/:group` the scope comes from
+ * the route, so treating it as a "filter" would offer an "Azzera i filtri" button
+ * that empties the page it is on.
+ */
 const isFiltering = computed(() =>
-  filter.value !== 'all' || scope.value !== 'all' || selectedGroup.value !== 'all' || searchQuery.value.trim() !== ''
+  filter.value !== 'all' || scope.value !== 'all' || searchQuery.value.trim() !== ''
 )
 
 /**
@@ -61,7 +66,7 @@ function toRows(todos: Todo[]): Row[] {
     todo,
     meta: groupMeta(todo.group_name),
     shared: isShared(todo),
-    canEdit: todoPermission(todo) !== 'read'
+    canEdit: permissionFor(todo) !== 'read'
   }))
 }
 
@@ -94,11 +99,10 @@ const sections = computed(() => groupedTodos.value.map(section => ({
     <!-- Empty state -->
     <TodoEmpty
       v-else-if="filteredTodos.length === 0"
-      :total-count="stats.total"
+      :total-count="scopedStats.total"
       :is-filtering="isFiltering"
       :search-query="searchQuery"
       :filter="filter"
-      :selected-group="selectedGroup"
       @clear-filters="emit('clearFilters')"
       @create="emit('create')"
     />
@@ -139,7 +143,7 @@ const sections = computed(() => groupedTodos.value.map(section => ({
             @toggle="emit('toggle', $event)"
             @update-title="(id, title) => emit('updateTitle', id, title)"
             @update-group="(id, group) => emit('updateGroup', id, group)"
-            @filter-group="(grp) => emit('filterGroup', grp)"
+            @open-group="(grp) => emit('openGroup', grp)"
             @open-detail="emit('openDetail', $event)"
             @delete="emit('delete', $event)"
           />
@@ -161,7 +165,7 @@ const sections = computed(() => groupedTodos.value.map(section => ({
         @toggle="emit('toggle', $event)"
         @update-title="(id, title) => emit('updateTitle', id, title)"
         @update-group="(id, group) => emit('updateGroup', id, group)"
-        @filter-group="(grp) => emit('filterGroup', grp)"
+        @open-group="(grp) => emit('openGroup', grp)"
         @open-detail="emit('openDetail', $event)"
         @delete="emit('delete', $event)"
       />

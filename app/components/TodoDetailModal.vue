@@ -26,7 +26,7 @@ const emit = defineEmits<{
   (e: 'toggle', todo: Todo): void
   (e: 'save', payload: { id: number, title: string, group: string }): void
   (e: 'delete', id: number): void
-  (e: 'filter-group', name: string): void
+  (e: 'open-group', name: string): void
 }>()
 
 const { prefs, update } = usePreferences()
@@ -143,7 +143,7 @@ watch([() => draftTitle.value, () => isEditing.value], () => {
           class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-opacity hover:opacity-80"
           :class="groupColorClass"
           :title="`Vedi solo il gruppo ${groupName}`"
-          @click="emit('filter-group', groupName); emit('update:open', false)"
+          @click="emit('open-group', groupName); emit('update:open', false)"
         >
           <UIcon :name="groupIcon || 'i-lucide-folder'" class="h-3.5 w-3.5" />
           <span>{{ groupName }}</span>

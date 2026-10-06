@@ -32,7 +32,7 @@ const emit = defineEmits<{
   (e: 'updateTitle', id: number, newTitle: string): void
   (e: 'updateGroup', id: number, newGroup: string): void
   (e: 'openDetail', todo: Todo): void
-  (e: 'filterGroup', group: string): void
+  (e: 'openGroup', group: string): void
   (e: 'delete', id: number): void
 }>()
 
@@ -201,8 +201,8 @@ function openDetail() {
             type="button"
             class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
             :class="groupMeta.colorClass"
-            :title="`Filtra per gruppo: ${groupMeta.name}`"
-            @click.stop="emit('filterGroup', groupMeta.name)"
+            :title="`Apri il gruppo: ${groupMeta.name}`"
+            @click.stop="emit('openGroup', groupMeta.name)"
           >
             <UIcon :name="groupMeta.icon" class="h-3 w-3" />
             <span class="todo-meta">{{ groupMeta.name }}</span>

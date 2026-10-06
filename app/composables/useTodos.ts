@@ -290,11 +290,14 @@ export function useTodos() {
   }
 
   async function clearCompleted() {
-    const completedIds = todos.value.filter(t => t.completed).map(t => t.id)
+    // Scoped to the current group on purpose: on a group page "delete completed"
+    // must not reach the completed activities of every other group.
+    const completedIds = scopedTodos.value.filter(t => t.completed).map(t => t.id)
     if (completedIds.length === 0) return
 
+    const targetIds = new Set(completedIds)
     const snapshot = [...todos.value]
-    todos.value = todos.value.filter(t => !t.completed)
+    todos.value = todos.value.filter(t => !targetIds.has(t.id))
 
     try {
       const { data, error } = await supabase
@@ -341,14 +344,31 @@ export function useTodos() {
     return Boolean(todo.user_id && todo.user_id !== id)
   }
 
-  const stats = computed<TodoStats>(() => {
-    const total = todos.value.length
-    const completed = todos.value.filter(t => Boolean(t.completed)).length
+  function countStats(list: Todo[]): TodoStats {
+    const total = list.length
+    const completed = list.filter(t => Boolean(t.completed)).length
     const active = total - completed
     const percentage = total > 0 ? Math.round((completed / total) * 100) : 0
 
     return { total, active, completed, percentage }
+  }
+
+  const stats = computed<TodoStats>(() => countStats(todos.value))
+
+  /**
+   * The activities the current page is actually about: everything, or just the group
+   * the route is showing (`selectedGroup` is pushed by `/g/:group`).
+   *
+   * The filter tabs, the empty state and "delete completed" all read from here
+   * rather than from the whole list — otherwise a group page would show global
+   * counters, and clearing completed there would delete rows of other groups.
+   */
+  const scopedTodos = computed<Todo[]>(() => {
+    if (selectedGroup.value === 'all') return todos.value
+    return todos.value.filter(t => (t.group_name || 'Generale') === selectedGroup.value)
   })
+
+  const scopedStats = computed<TodoStats>(() => countStats(scopedTodos.value))
 
   const groupsWithTasks = computed<string[]>(() => {
     const set = new Set<string>()
@@ -695,6 +715,8 @@ export function useTodos() {
     filteredTodos,
     groupedTodos,
     stats,
+    scopedTodos,
+    scopedStats,
     isShared,
     groupMeta,
     isCustomGroup,

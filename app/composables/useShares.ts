@@ -1,6 +1,14 @@
 import type { Database } from '~/types/database.types'
 import type { TodoPermission, TodoShare } from '~/types/todo'
-import type { Todo } from '~/types/todo'
+
+/**
+ * The only fields the grant lookup needs. Both a todo and a note satisfy it, which
+ * is what lets one implementation decide permissions for either kind of content.
+ */
+export interface ShareableItem {
+  user_id: string | null
+  group_name: string | null
+}
 
 export function useShares() {
   const supabase = useSupabaseClient<Database>()
@@ -85,23 +93,24 @@ export function useShares() {
   })
 
   /**
-   * What the current user may do with one activity.
+   * What the current user may do with one item — a todo or a note: the sharing is
+   * group-scoped and stored once, so the answer is the same for both.
    *
    * Received shares are already loaded, so the UI can grey out read-only rows
    * instead of letting the user try and fail against RLS. `unknown` (shares not
-   * loaded yet, or an activity shared some other way) deliberately keeps the
-   * actions enabled — the server stays the authority.
+   * loaded yet, or an item shared some other way) deliberately keeps the actions
+   * enabled — the server stays the authority.
    */
-  function todoPermission(todo: Todo): 'edit' | 'read' | 'unknown' {
+  function permissionFor(item: ShareableItem): 'edit' | 'read' | 'unknown' {
     const me = userId.value
     if (!me) return 'unknown'
-    if (!todo.user_id || todo.user_id === me) return 'edit'
+    if (!item.user_id || item.user_id === me) return 'edit'
 
-    const grants = grantsByOwner.value.get(todo.user_id)
+    const grants = grantsByOwner.value.get(item.user_id)
     if (!grants) return 'unknown'
 
     // A group-specific grant wins over a whole-list grant.
-    const grant = grants.get(todo.group_name ?? 'Generale') ?? grants.get('*')
+    const grant = grants.get(item.group_name ?? 'Generale') ?? grants.get('*')
     if (!grant) return 'read'
 
     return grant === 'edit' ? 'edit' : 'read'
@@ -230,6 +239,6 @@ export function useShares() {
     loadShares,
     shareList,
     removeShare,
-    todoPermission
+    permissionFor
   }
 }

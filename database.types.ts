@@ -71,12 +71,110 @@ export type Database = {
         }
         Relationships: []
       }
+      notes: {
+        Row: {
+          body: string
+          created_at: string | null
+          group_name: string | null
+          id: number
+          title: string
+          updated_at: string | null
+          user_id: string | null
+        }
+        Insert: {
+          body?: string
+          created_at?: string | null
+          group_name?: string | null
+          id?: number
+          title: string
+          updated_at?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          body?: string
+          created_at?: string | null
+          group_name?: string | null
+          id?: number
+          title?: string
+          updated_at?: string | null
+          user_id?: string | null
+        }
+        Relationships: []
+      }
+      profiles: {
+        Row: {
+          approved: boolean
+          approved_at: string | null
+          approved_by: string | null
+          created_at: string
+          email: string | null
+          id: string
+          is_admin: boolean
+        }
+        Insert: {
+          approved?: boolean
+          approved_at?: string | null
+          approved_by?: string | null
+          created_at?: string
+          email?: string | null
+          id: string
+          is_admin?: boolean
+        }
+        Update: {
+          approved?: boolean
+          approved_at?: string | null
+          approved_by?: string | null
+          created_at?: string
+          email?: string | null
+          id?: string
+          is_admin?: boolean
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      admin_delete_user: {
+        Args: { p_user_id: string }
+        Returns: undefined
+      }
+      admin_list_users: {
+        Args: Record<string, never>
+        Returns: {
+          approved: boolean
+          approved_at: string | null
+          created_at: string | null
+          email: string | null
+          id: string
+          is_admin: boolean
+          last_sign_in_at: string | null
+          note_count: number
+          share_count: number
+          todo_count: number
+        }[]
+      }
+      admin_set_admin: {
+        Args: { p_is_admin: boolean, p_user_id: string }
+        Returns: undefined
+      }
+      admin_set_approved: {
+        Args: { p_approved: boolean, p_user_id: string }
+        Returns: undefined
+      }
+      admin_set_password: {
+        Args: { p_password: string, p_user_id: string }
+        Returns: undefined
+      }
+      is_admin: {
+        Args: { uid: string }
+        Returns: boolean
+      }
+      is_approved: {
+        Args: { uid: string }
+        Returns: boolean
+      }
     }
     Enums: {
       [_ in never]: never

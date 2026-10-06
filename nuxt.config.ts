@@ -56,6 +56,16 @@ export default defineNuxtConfig({
 
   modules: ['@nuxtjs/supabase', '@nuxt/ui', '@vite-pwa/nuxt'],
 
+  supabase: {
+    // The sign-in screen is rendered by the app itself at '/', and the workspace is
+    // gated by the account-approval check, so there is no /login route to redirect to.
+    // The module's `auth-redirect` plugin is a GLOBAL route middleware: left at its
+    // default it 302s every non-excluded path (including '/') to '/login' as soon as
+    // there is no session — harmless while the app had no router, but it made every
+    // one of the new pages unreachable, starting with the sign-in screen.
+    redirect: false
+  },
+
   pwa: {
     registerType: 'autoUpdate',
     registerWebManifestInRouteRules: true,

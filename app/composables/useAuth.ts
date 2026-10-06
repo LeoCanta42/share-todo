@@ -1,8 +1,10 @@
 import type { Database } from '~/types/database.types'
+import { MIN_PASSWORD_LENGTH } from '~/utils/password'
 
 export function useAuth() {
   const supabase = useSupabaseClient<Database>()
   const user = useSupabaseUser()
+  const { userEmail } = useCurrentUser()
   const toast = useToast()
 
   const loading = ref(false)
@@ -77,6 +79,84 @@ export function useAuth() {
     }
   }
 
+  /**
+   * Change the signed-in user's own password.
+   *
+   * `auth.updateUser()` does not ask for the current password, so on its own it
+   * would let anyone with a borrowed session lock the owner out. The current
+   * password is therefore verified first by re-authenticating: same credentials,
+   * and it fails loudly instead of silently rewriting the password.
+   */
+  async function changePassword(currentPassword: string, newPassword: string): Promise<boolean> {
+    const email = userEmail.value
+    if (!email) {
+      toast.add({
+        title: 'Sessione non valida',
+        description: 'Accedi di nuovo per cambiare la password.',
+        color: 'error'
+      })
+      return false
+    }
+
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      toast.add({
+        title: 'Password troppo corta',
+        description: `Usa almeno ${MIN_PASSWORD_LENGTH} caratteri.`,
+        color: 'warning'
+      })
+      return false
+    }
+
+    if (currentPassword === newPassword) {
+      toast.add({
+        title: 'Nessuna modifica',
+        description: 'La nuova password è identica a quella attuale.',
+        color: 'info'
+      })
+      return false
+    }
+
+    loading.value = true
+    try {
+      const { error: authError } = await supabase.auth.signInWithPassword({
+        email,
+        password: currentPassword
+      })
+
+      if (authError) {
+        toast.add({
+          title: 'Password attuale non corretta',
+          description: 'Controlla la password inserita e riprova.',
+          color: 'error'
+        })
+        return false
+      }
+
+      const { error } = await supabase.auth.updateUser({ password: newPassword })
+
+      if (error) {
+        toast.add({
+          title: 'Errore aggiornamento password',
+          description: error.message,
+          color: 'error'
+        })
+        return false
+      }
+
+      toast.add({
+        title: 'Password aggiornata',
+        description: 'Usa la nuova password al prossimo accesso.',
+        color: 'success'
+      })
+      return true
+    } catch (err: unknown) {
+      console.error('Change password error:', err)
+      return false
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function logout() {
     loading.value = true
     try {
@@ -104,6 +184,7 @@ export function useAuth() {
     loading,
     loginWithEmail,
     signUpWithEmail,
+    changePassword,
     logout
   }
 }

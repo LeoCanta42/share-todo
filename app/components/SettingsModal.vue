@@ -3,17 +3,19 @@ import { ACCENTS, DENSITIES, SORT_ORDERS, TEXT_SIZES, usePreferences } from '~/c
 import { useAppearance } from '~/composables/useAppearance'
 import { useConfirm } from '~/composables/useConfirm'
 import { usePwa } from '~/composables/usePwa'
+import { useAuth } from '~/composables/useAuth'
+import { MIN_PASSWORD_LENGTH } from '~/utils/password'
 import { GROUP_ICONS, GROUP_TONES } from '~/utils/groups'
 
 /**
  * Everything the user can tailor: appearance, list behaviour, their own groups
- * (name + colour + icon) and the PWA install/update actions.
+ * (name + colour + icon), their password, and the PWA install/update actions.
  *
  * Reads the shared composables directly instead of taking a dozen props: they are
  * backed by `useState`/`useCookie`, so this is the same state the rest of the app
  * reads.
  */
-defineProps<{ open: boolean }>()
+const props = defineProps<{ open: boolean }>()
 
 const emit = defineEmits<{ (e: 'update:open', value: boolean): void }>()
 
@@ -21,18 +23,67 @@ const { prefs, update, reset } = usePreferences()
 const { theme, setTheme, setAccent } = useAppearance()
 const { availableGroups, customGroups, removedGroups, groupStats, groupMeta, isCustomGroup, isFallbackGroup, addGroup, setGroupStyle, clearGroupStyle, deleteGroup, restoreGroup, restoreAllGroups } = useTodos()
 const { canInstall, install, needRefresh, updateApp, isIos, offlineReady, isInstalled, manualInstallHint } = usePwa()
+const { changePassword, loading: authLoading } = useAuth()
+const { userEmail } = useCurrentUser()
 const { ask } = useConfirm()
 const toast = useToast()
 
-type Tab = 'aspetto' | 'attivita' | 'gruppi' | 'app'
+type Tab = 'aspetto' | 'attivita' | 'gruppi' | 'sicurezza' | 'app'
 const tab = ref<Tab>('aspetto')
 
 const tabs = [
   { id: 'aspetto', label: 'Aspetto', icon: 'i-lucide-palette' },
   { id: 'attivita', label: 'Attività', icon: 'i-lucide-list-checks' },
   { id: 'gruppi', label: 'Gruppi', icon: 'i-lucide-folder-tree' },
+  { id: 'sicurezza', label: 'Sicurezza', icon: 'i-lucide-key-round' },
   { id: 'app', label: 'App', icon: 'i-lucide-smartphone' }
 ]
+
+/* ------------------------------------------------------------ own password */
+const currentPassword = ref('')
+const newPassword = ref('')
+const confirmNewPassword = ref('')
+const passwordError = ref('')
+
+const passwordFormValid = computed(() =>
+  currentPassword.value.length > 0
+  && newPassword.value.length >= MIN_PASSWORD_LENGTH
+  && newPassword.value === confirmNewPassword.value
+)
+
+function resetPasswordForm() {
+  currentPassword.value = ''
+  newPassword.value = ''
+  confirmNewPassword.value = ''
+  passwordError.value = ''
+}
+
+async function submitPasswordChange() {
+  passwordError.value = ''
+
+  if (!currentPassword.value) {
+    passwordError.value = 'Inserisci la password attuale.'
+    return
+  }
+  if (newPassword.value.length < MIN_PASSWORD_LENGTH) {
+    passwordError.value = `La nuova password deve contenere almeno ${MIN_PASSWORD_LENGTH} caratteri.`
+    return
+  }
+  if (newPassword.value !== confirmNewPassword.value) {
+    passwordError.value = 'Le due nuove password non coincidono.'
+    return
+  }
+
+  const changed = await changePassword(currentPassword.value, newPassword.value)
+  if (changed) {
+    resetPasswordForm()
+  }
+}
+
+// Never leave a half-typed password behind when the dialog closes.
+watch(() => props.open, (open) => {
+  if (!open) resetPasswordForm()
+})
 
 const expandedGroup = ref<string | null>(null)
 const newGroupName = ref('')
@@ -436,6 +487,99 @@ async function handleInstall() {
           I gruppi che crei restano disponibili anche quando non contengono attività. Anche i gruppi
           predefiniti si possono eliminare: le loro attività tornano in "Generale".
         </p>
+      </section>
+
+      <!-- ---------------------------------------------------------------- -->
+      <section v-else-if="tab === 'sicurezza'" class="anim-fade space-y-4">
+        <div class="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
+          <div class="flex items-start gap-3">
+            <span class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-accent-50 text-accent-600 dark:bg-accent-950/50 dark:text-accent-400">
+              <UIcon name="i-lucide-user-round" class="h-5 w-5" />
+            </span>
+            <div class="min-w-0">
+              <h3 class="text-sm font-bold text-slate-900 dark:text-white">Il tuo account</h3>
+              <p class="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">
+                {{ userEmail ?? '—' }}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <form
+          class="space-y-3 rounded-2xl border border-slate-200 p-4 dark:border-slate-800"
+          @submit.prevent="submitPasswordChange"
+        >
+          <div>
+            <h3 class="text-sm font-bold text-slate-900 dark:text-white">Cambia password</h3>
+            <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+              La password attuale viene verificata prima del cambio.
+            </p>
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="pwd-current" class="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+              Password attuale
+            </label>
+            <input
+              id="pwd-current"
+              v-model="currentPassword"
+              type="password"
+              autocomplete="current-password"
+              class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-base text-slate-900 placeholder-slate-400 focus:border-accent-500 focus:ring-2 focus:ring-accent-500/25 focus:outline-none sm:text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              :disabled="authLoading"
+            >
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="pwd-new" class="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+              Nuova password
+            </label>
+            <input
+              id="pwd-new"
+              v-model="newPassword"
+              type="password"
+              autocomplete="new-password"
+              :placeholder="`Almeno ${MIN_PASSWORD_LENGTH} caratteri`"
+              class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-base text-slate-900 placeholder-slate-400 focus:border-accent-500 focus:ring-2 focus:ring-accent-500/25 focus:outline-none sm:text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              :disabled="authLoading"
+            >
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="pwd-confirm" class="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+              Conferma la nuova password
+            </label>
+            <input
+              id="pwd-confirm"
+              v-model="confirmNewPassword"
+              type="password"
+              autocomplete="new-password"
+              class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-base text-slate-900 placeholder-slate-400 focus:border-accent-500 focus:ring-2 focus:ring-accent-500/25 focus:outline-none sm:text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              :disabled="authLoading"
+            >
+          </div>
+
+          <p
+            v-if="passwordError"
+            class="flex items-center gap-1.5 text-xs text-red-600 dark:text-red-400"
+            role="alert"
+          >
+            <UIcon name="i-lucide-alert-circle" class="h-3.5 w-3.5 flex-shrink-0" />
+            <span>{{ passwordError }}</span>
+          </p>
+
+          <UButton
+            type="submit"
+            color="primary"
+            size="md"
+            icon="i-lucide-key-round"
+            class="rounded-xl font-semibold"
+            :loading="authLoading"
+            :disabled="!passwordFormValid || authLoading"
+          >
+            Aggiorna password
+          </UButton>
+        </form>
       </section>
 
       <!-- ---------------------------------------------------------------- -->

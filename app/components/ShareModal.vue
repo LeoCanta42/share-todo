@@ -9,7 +9,13 @@ import { formatShortDate } from '~/utils/date'
  * Rebuilt on AppModal, and now also lists the lists *shared with you* — the
  * composable already fetched them, but nothing ever displayed them.
  */
-defineProps<{ open: boolean }>()
+const props = withDefaults(defineProps<{
+  open: boolean
+  /** Group to preselect — the group page's share button passes its own name. */
+  initialGroup?: string | null
+}>(), {
+  initialGroup: null
+})
 
 const emit = defineEmits<{ (e: 'update:open', value: boolean): void }>()
 
@@ -23,6 +29,13 @@ const ALL_GROUPS = '__all__'
 const inviteEmail = ref('')
 const invitePermission = ref<'edit' | 'read'>('edit')
 const inviteGroup = ref<string>(ALL_GROUPS)
+
+// The dialog lives in shared state, so it has to follow whichever caller opened it:
+// the navbar opens it scoped to the whole list, a group page scoped to that group.
+watch([() => props.open, () => props.initialGroup], ([open, group]) => {
+  if (!open) return
+  inviteGroup.value = group && group !== 'all' ? group : ALL_GROUPS
+})
 
 const permissionOptions = [
   { id: 'edit', label: 'Puo modificare', icon: 'i-lucide-pencil' },

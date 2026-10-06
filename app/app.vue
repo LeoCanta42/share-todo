@@ -2,10 +2,12 @@
 import { useAuth } from '~/composables/useAuth'
 import { useShares } from '~/composables/useShares'
 import { useTodos } from '~/composables/useTodos'
+import { useNotes } from '~/composables/useNotes'
+import { useProfile } from '~/composables/useProfile'
 import { useAppearance } from '~/composables/useAppearance'
-import { useConfirm } from '~/composables/useConfirm'
 import { usePwa } from '~/composables/usePwa'
-import type { Todo } from '~/types/todo'
+import { useQuickAdd } from '~/composables/useQuickAdd'
+import { useShareDialog } from '~/composables/useShareDialog'
 
 useSeoMeta({
   title: 'ShareToDo — Attività e condivisione',
@@ -16,139 +18,21 @@ useSeoMeta({
 })
 
 const { user, logout } = useAuth()
-const { userEmail } = useCurrentUser()
-const { myShares, loadShares, todoPermission } = useShares()
-const { prefs } = useAppearance()
-const { ask } = useConfirm()
+const { myShares, loadShares } = useShares()
+const { todos, loadTodos } = useTodos()
+const { notes, loadNotes } = useNotes()
+const { status: approvalStatus, isAdmin, isApproved, loadProfile, resetProfile } = useProfile()
 const { needRefresh, offlineReady, updateApp } = usePwa()
+const { focusQuickAdd } = useQuickAdd()
+const { open: isShareModalOpen, targetGroup: shareTarget, openShare } = useShareDialog()
 
-const {
-  todos,
-  isAdding,
-  filter,
-  scope,
-  selectedGroup,
-  searchQuery,
-  availableGroups,
-  stats,
-  groupMeta,
-  isShared,
-  loadTodos,
-  addTodo,
-  toggleTodo,
-  updateTodoTitle,
-  updateTodoGroup,
-  deleteTodo,
-  clearCompleted
-} = useTodos()
+// Projects the stored preferences onto <html> (accent, density, text size) and
+// keeps the browser/PWA theme colour in step with the chosen accent.
+useAppearance()
 
 const toast = useToast()
 
-/* ------------------------------------------------------------------ dialogs */
-const isShareModalOpen = ref(false)
 const isSettingsModalOpen = ref(false)
-const isDetailOpen = ref(false)
-const detailId = ref<number | null>(null)
-
-/* ------------------------------------------------------------------ refresh */
-const isRefreshing = ref(false)
-
-async function handleRefresh() {
-  if (isRefreshing.value) return
-  isRefreshing.value = true
-  try {
-    await Promise.all([loadTodos(), loadShares()])
-    toast.add({
-      title: 'Elenco aggiornato',
-      color: 'success'
-    })
-  } finally {
-    isRefreshing.value = false
-  }
-}
-
-/** Derived so the open dialog always shows the latest version of the activity. */
-const detailTodo = computed<Todo | null>(
-  () => todos.value.find(t => t.id === detailId.value) ?? null
-)
-
-const detailMeta = computed(() => groupMeta(detailTodo.value?.group_name))
-const detailEditable = computed(() => (detailTodo.value ? todoPermission(detailTodo.value) !== 'read' : true))
-
-function openDetail(todo: Todo) {
-  detailId.value = todo.id
-  isDetailOpen.value = true
-}
-
-/* ------------------------------------------------------------- mutation UX */
-function shorten(text: string, max = 140): string {
-  const single = text.replace(/\s+/g, ' ').trim()
-  return single.length > max ? `${single.slice(0, max - 1)}…` : single
-}
-
-async function handleDelete(id: number) {
-  const todo = todos.value.find(t => t.id === id)
-  if (prefs.value.confirmDelete) {
-    const confirmed = await ask({
-      title: 'Eliminare questa attività?',
-      description: todo ? shorten(todo.title) : undefined,
-      confirmLabel: 'Elimina',
-      tone: 'danger',
-      icon: 'i-lucide-trash-2'
-    })
-    if (!confirmed) return
-  }
-
-  if (detailId.value === id) {
-    isDetailOpen.value = false
-  }
-  await deleteTodo(id)
-}
-
-async function handleClearCompleted() {
-  const count = stats.value.completed
-  if (count === 0) return
-
-  if (prefs.value.confirmDelete) {
-    const confirmed = await ask({
-      title: `Eliminare ${count} attività completate?`,
-      description: 'Le attività condivise in sola lettura resteranno nell\'elenco.',
-      confirmLabel: 'Elimina completate',
-      tone: 'danger',
-      icon: 'i-lucide-eraser'
-    })
-    if (!confirmed) return
-  }
-
-  await clearCompleted()
-}
-
-function handleDetailSave(payload: { id: number, title: string, group: string }) {
-  const todo = todos.value.find(t => t.id === payload.id)
-  if (!todo) return
-  if (payload.title !== todo.title) {
-    updateTodoTitle(payload.id, payload.title)
-  }
-  if (payload.group !== (todo.group_name || 'Generale')) {
-    updateTodoGroup(payload.id, payload.group)
-  }
-}
-
-function clearFilters() {
-  filter.value = 'all'
-  scope.value = 'all'
-  selectedGroup.value = 'all'
-  searchQuery.value = ''
-}
-
-/* ------------------------------------------------------- quick add shortcuts */
-const focusSignal = ref(0)
-function focusNewTodo() {
-  focusSignal.value += 1
-  if (import.meta.client) {
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
-}
 
 /* -------------------------------------------------------------- PWA notices */
 watch(needRefresh, (value) => {
@@ -173,32 +57,29 @@ watch(offlineReady, (value) => {
 
 /* --------------------------------------------------------------- workspace */
 // Runs immediately with the current value and again whenever auth changes, so the
-// workspace loads on sign-in and is cleared on sign-out. There is deliberately no
-// onMounted duplicate here: that would fetch every list twice on each page load.
-watch(user, (currentUser) => {
-  if (currentUser) {
-    loadTodos()
-    loadShares()
-  } else {
+// workspace loads on sign-in and is cleared on sign-out.
+watch(user, async (currentUser) => {
+  if (!currentUser) {
     todos.value = []
+    notes.value = []
     myShares.value = []
-    isDetailOpen.value = false
-    isSettingsModalOpen.value = false
+    resetProfile()
     isShareModalOpen.value = false
+    isSettingsModalOpen.value = false
+    return
+  }
+
+  // The approval flag decides whether the account may read anything at all, so it
+  // is read first: every list query for a pending account would come back empty
+  // anyway, and its policies are the ones that gate the rest.
+  await loadProfile()
+
+  if (isApproved.value) {
+    loadTodos()
+    loadNotes()
+    loadShares()
   }
 }, { immediate: true })
-
-/* -------------------------------------------------- mobile floating action */
-onMounted(() => {
-  // Manifest shortcut: /?focus=new focuses the quick-add bar.
-  const route = useRoute()
-  if (route.query.focus === 'new') {
-    focusNewTodo()
-  }
-})
-
-// Keep the grouped/ungrouped list in sync with the chosen sort order.
-const listIsGrouped = computed(() => prefs.value.sort === 'group' && prefs.value.groupSections)
 </script>
 
 <template>
@@ -211,11 +92,10 @@ const listIsGrouped = computed(() => prefs.value.sort === 'group' && prefs.value
       <AppNavbar
         :user="user"
         :collaborators-count="myShares.length"
-        :refreshing="isRefreshing"
-        @open-share="isShareModalOpen = true"
+        :is-admin="isAdmin"
+        @open-share="openShare(null)"
         @open-settings="isSettingsModalOpen = true"
         @logout="logout"
-        @refresh="handleRefresh"
       />
 
       <!-- Unauthenticated: the sign-in screen -->
@@ -223,65 +103,22 @@ const listIsGrouped = computed(() => prefs.value.sort === 'group' && prefs.value
         <AuthView />
       </main>
 
-      <!-- Authenticated: the workspace -->
-      <main v-else class="mx-auto max-w-3xl space-y-4 px-4 pt-5 pb-24 sm:space-y-6 sm:px-6 sm:pt-8 sm:pb-14">
-        <TodoHeader :stats="stats" :user-email="userEmail" />
-
-        <section aria-label="Aggiungi attività">
-          <TodoInput
-            :loading="isAdding"
-            :available-groups="availableGroups"
-            :default-group="selectedGroup !== 'all' ? selectedGroup : 'Generale'"
-            :focus-signal="focusSignal"
-            @add="(title, group) => addTodo(title, group)"
-          />
-        </section>
-
-        <section v-if="stats.total > 0" aria-label="Filtri e ricerca">
-          <TodoFilters @clear-completed="handleClearCompleted" />
-        </section>
-
-        <section aria-label="Elenco attività">
-          <TodoList
-            @toggle="toggleTodo"
-            @update-title="updateTodoTitle"
-            @update-group="updateTodoGroup"
-            @filter-group="(grp) => selectedGroup = grp"
-            @open-detail="openDetail"
-            @delete="handleDelete"
-            @clear-filters="clearFilters"
-            @create="focusNewTodo"
-          />
-        </section>
-
-        <footer class="space-y-1 pt-6 text-center text-xs text-slate-400 dark:text-slate-500">
-          <p>Organizza le tue attività in gruppi e condividile in tempo reale.</p>
-        </footer>
+      <!-- Signed in but not yet approved, or the check is still running -->
+      <main v-else-if="approvalStatus !== 'approved'" class="mx-auto max-w-3xl px-4 sm:px-6">
+        <AccountStatus :status="approvalStatus" />
       </main>
 
-      <!-- Dialogs -->
-      <TodoDetailModal
-        v-if="detailTodo"
-        v-model:open="isDetailOpen"
-        :todo="detailTodo"
-        :groups="availableGroups"
-        :is-shared="isShared(detailTodo)"
-        :can-edit="detailEditable"
-        :group-icon="detailMeta.icon"
-        :group-color-class="detailMeta.colorClass"
-        @toggle="toggleTodo"
-        @save="handleDetailSave"
-        @delete="handleDelete"
-        @filter-group="(grp) => { selectedGroup = grp }"
-      />
+      <!-- Authenticated and approved: the routed pages -->
+      <NuxtPage v-else />
 
+      <!-- Shell-wide dialogs, reachable from every page -->
       <LazySettingsModal v-model:open="isSettingsModalOpen" />
-      <LazyShareModal v-model:open="isShareModalOpen" />
+      <LazyShareModal v-model:open="isShareModalOpen" :initial-group="shareTarget" />
       <AppConfirmDialog />
 
-      <!-- Mobile shortcut back to the quick-add bar. Own component on purpose:
+      <!-- Mobile shortcut back to the quick-add field. Own component on purpose:
            the scroll flag lives there so scrolling never re-renders the app root. -->
-      <AppFab v-if="user" @activate="focusNewTodo" />
+      <AppFab v-if="user && approvalStatus === 'approved'" @activate="focusQuickAdd" />
     </div>
   </UApp>
 </template>
