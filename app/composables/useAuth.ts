@@ -43,10 +43,7 @@ export function useAuth() {
     try {
       const { error, data } = await supabase.auth.signUp({
         email: email.trim(),
-        password,
-        options: {
-          emailRedirectTo: typeof window !== 'undefined' ? window.location.origin : undefined
-        }
+        password
       })
 
       if (error) {
@@ -66,8 +63,8 @@ export function useAuth() {
         })
       } else {
         toast.add({
-          title: 'Registrazione quasi completata',
-          description: 'Controlla la tua email per confermare l\'account.',
+          title: 'Registrazione completata',
+          description: 'Il tuo account è in attesa di conferma da parte dell\'amministratore.',
           color: 'info'
         })
       }

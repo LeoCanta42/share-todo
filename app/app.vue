@@ -50,6 +50,23 @@ const isSettingsModalOpen = ref(false)
 const isDetailOpen = ref(false)
 const detailId = ref<number | null>(null)
 
+/* ------------------------------------------------------------------ refresh */
+const isRefreshing = ref(false)
+
+async function handleRefresh() {
+  if (isRefreshing.value) return
+  isRefreshing.value = true
+  try {
+    await Promise.all([loadTodos(), loadShares()])
+    toast.add({
+      title: 'Elenco aggiornato',
+      color: 'success'
+    })
+  } finally {
+    isRefreshing.value = false
+  }
+}
+
 /** Derived so the open dialog always shows the latest version of the activity. */
 const detailTodo = computed<Todo | null>(
   () => todos.value.find(t => t.id === detailId.value) ?? null
@@ -194,9 +211,11 @@ const listIsGrouped = computed(() => prefs.value.sort === 'group' && prefs.value
       <AppNavbar
         :user="user"
         :collaborators-count="myShares.length"
+        :refreshing="isRefreshing"
         @open-share="isShareModalOpen = true"
         @open-settings="isSettingsModalOpen = true"
         @logout="logout"
+        @refresh="handleRefresh"
       />
 
       <!-- Unauthenticated: the sign-in screen -->
@@ -256,9 +275,8 @@ const listIsGrouped = computed(() => prefs.value.sort === 'group' && prefs.value
         @filter-group="(grp) => { selectedGroup = grp }"
       />
 
-      <!-- Loaded on first open: both are used rarely and carry a lot of markup. -->
-      <LazySettingsModal v-if="isSettingsModalOpen" v-model:open="isSettingsModalOpen" />
-      <LazyShareModal v-if="isShareModalOpen" v-model:open="isShareModalOpen" />
+      <LazySettingsModal v-model:open="isSettingsModalOpen" />
+      <LazyShareModal v-model:open="isShareModalOpen" />
       <AppConfirmDialog />
 
       <!-- Mobile shortcut back to the quick-add bar. Own component on purpose:

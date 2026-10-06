@@ -18,6 +18,7 @@ function lockBody() {
   if (lockCount === 0) {
     previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
+    document.documentElement.style.overflow = 'hidden'
   }
   lockCount++
 }
@@ -26,6 +27,7 @@ function unlockBody() {
   lockCount = Math.max(0, lockCount - 1)
   if (lockCount === 0) {
     document.body.style.overflow = previousOverflow
+    document.documentElement.style.overflow = ''
   }
 }
 

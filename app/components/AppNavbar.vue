@@ -6,12 +6,14 @@ import { usePwa } from '~/composables/usePwa'
 const props = defineProps<{
   user?: { email?: string } | null
   collaboratorsCount?: number
+  refreshing?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'openShare'): void
   (e: 'openSettings'): void
   (e: 'logout'): void
+  (e: 'refresh'): void
 }>()
 
 const { theme, setTheme, isDark } = useAppearance()
@@ -33,6 +35,7 @@ const menuItems = computed<DropdownMenuItem[][]>(() => {
   ])
 
   groups.push([
+    { label: 'Aggiorna attività', icon: 'i-lucide-refresh-cw', onSelect: () => emit('refresh'), disabled: props.refreshing },
     { label: 'Personalizza', icon: 'i-lucide-sliders-horizontal', onSelect: () => emit('openSettings') },
     { label: 'Condividi', icon: 'i-lucide-share-2', onSelect: () => emit('openShare') },
     { label: 'Installa app', icon: 'i-lucide-download', onSelect: () => install(), disabled: !canInstall.value }
@@ -100,6 +103,20 @@ const collaborators = computed(() => props.collaboratorsCount ?? 0)
           <span class="hidden sm:inline">Installa</span>
         </UButton>
 
+        <!-- Refresh -->
+        <UButton
+          v-if="user"
+          variant="ghost"
+          color="neutral"
+          size="sm"
+          icon="i-lucide-refresh-cw"
+          class="rounded-xl"
+          :class="{ 'animate-spin': refreshing }"
+          :disabled="refreshing"
+          aria-label="Aggiorna attività"
+          title="Aggiorna attività"
+          @click="emit('refresh')"
+        />
         <!-- Share -->
         <UButton
           v-if="user"
