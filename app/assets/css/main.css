@@ -237,6 +237,19 @@
     background-color: #020617;
   }
 
+  /* Scroll lock for an open dialog (see `useDialogStack`). Deliberately a marker
+     class on <html> rather than inline `overflow: hidden` on <html>/<body>:
+     Nuxt UI's menus are reka-ui modal layers, so opening one writes
+     `overflow: hidden` inline on <body> and later restores *its own snapshot* of
+     that property. An inline lock of ours could be captured by that snapshot and
+     written back on release, which left the page permanently unscrollable after
+     "profile menu → Personalizza/Condividi → close". A class cannot be captured
+     or overwritten by a third party, so the lock is ours alone. */
+  html.dialog-scroll-lock,
+  html.dialog-scroll-lock body {
+    overflow: hidden;
+  }
+
   /* Long activities must stay readable and selectable: the old rule made the
      whole label `select-none`, so a long note could not even be copied. */
   ::selection {

@@ -12,13 +12,24 @@
 const stack: symbol[] = []
 let nextZ = 100
 let lockCount = 0
-let previousOverflow = ''
 
+/** Marker class on <html>; the rule lives in `main.css`. */
+const LOCK_CLASS = 'dialog-scroll-lock'
+
+/**
+ * Body scroll lock, deliberately a marker class on <html> rather than an inline
+ * `overflow: hidden` on <html>/<body>.
+ *
+ * `document.body.style.overflow` is shared with reka-ui (every Nuxt UI menu or
+ * selector is a modal reka layer): opening one writes `overflow: hidden` inline
+ * and, on release, writes back *its own snapshot* of that property. An inline
+ * lock of ours could be captured by that snapshot, so closing a dialog opened
+ * right after the profile menu re-applied `hidden` to <body> and left the page
+ * unscrollable until a reload. A class cannot be captured or overwritten.
+ */
 function lockBody() {
   if (lockCount === 0) {
-    previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    document.documentElement.style.overflow = 'hidden'
+    document.documentElement.classList.add(LOCK_CLASS)
   }
   lockCount++
 }
@@ -26,8 +37,7 @@ function lockBody() {
 function unlockBody() {
   lockCount = Math.max(0, lockCount - 1)
   if (lockCount === 0) {
-    document.body.style.overflow = previousOverflow
-    document.documentElement.style.overflow = ''
+    document.documentElement.classList.remove(LOCK_CLASS)
   }
 }
 
@@ -35,11 +45,17 @@ export function useDialogStack() {
   const id = Symbol('dialog')
   const zIndex = ref(100)
 
+  /** Whether *this* dialog is currently contributing to the lock count. */
+  let counted = false
+
   /** Push this dialog on top; it becomes the only one reacting to Escape/Tab. */
   function enter() {
     stack.push(id)
     zIndex.value = ++nextZ
-    lockBody()
+    if (!counted) {
+      counted = true
+      lockBody()
+    }
   }
 
   /** Pop this dialog and release the scroll lock if it was the last one. */
@@ -47,7 +63,12 @@ export function useDialogStack() {
     const index = stack.indexOf(id)
     if (index >= 0) stack.splice(index, 1)
     if (stack.length === 0) nextZ = 100
-    unlockBody()
+    // Only release what this dialog actually took: a dialog that mounts closed
+    // (the watcher runs immediately) must not decrement another dialog's lock.
+    if (counted) {
+      counted = false
+      unlockBody()
+    }
   }
 
   function isTopMost() {
