@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { TodoWithGroup } from '~/types/todo'
 import type { GroupNode } from '~/types/group'
-import { formatDate } from '~/utils/date'
+import { formatDate, dueBucket, dueLabel } from '~/utils/date'
 import { haptic } from '~/utils/haptics'
 import type { GroupMeta } from '~/utils/groups'
 import { usePreferences } from '~/composables/usePreferences'
@@ -45,6 +45,27 @@ const editRef = ref<HTMLTextAreaElement | null>(null)
 const { prefs } = usePreferences()
 
 const isLong = computed(() => props.todo.title.length > 110 || props.todo.title.includes('\n'))
+
+const bucket = computed(() =>
+  props.todo.due_at ? dueBucket(props.todo.due_at, props.todo.due_all_day) : null
+)
+
+const dueText = computed(() =>
+  props.todo.due_at ? dueLabel(props.todo.due_at, props.todo.due_all_day) : ''
+)
+
+const dueChipClass = computed(() => {
+  if (props.todo.completed) {
+    return 'bg-slate-100 text-slate-400 dark:bg-slate-800/60 dark:text-slate-500'
+  }
+  if (bucket.value === 'overdue') {
+    return 'bg-red-50 text-red-700 border border-red-200 dark:bg-red-950/60 dark:text-red-300 dark:border-red-900/50 font-semibold'
+  }
+  if (bucket.value === 'today') {
+    return 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-900/50 font-semibold'
+  }
+  return 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+})
 
 /**
  * Only the compact density truncates the text: "Normale" and "Comoda" show the
@@ -215,6 +236,22 @@ function toggleComplete() {
           >
             <UIcon :name="groupMeta.icon" class="h-3 w-3" />
             <span class="todo-meta">{{ groupMeta.name }}</span>
+          </button>
+
+          <!-- Due date chip -->
+          <button
+            v-if="todo.due_at"
+            type="button"
+            class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+            :class="dueChipClass"
+            :title="`Scadenza: ${dueText}`"
+            @click.stop="emit('openDetail', todo)"
+          >
+            <UIcon
+              :name="bucket === 'overdue' && !todo.completed ? 'i-lucide-alert-circle' : 'i-lucide-calendar'"
+              class="h-3 w-3 flex-shrink-0"
+            />
+            <span class="todo-meta">{{ dueText }}</span>
           </button>
 
           <span

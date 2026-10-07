@@ -22,6 +22,7 @@ const {
   toggleTodo,
   updateTodoTitle,
   updateTodoGroup,
+  updateTodoDueDate,
   deleteTodo,
   clearCompleted,
   filter,
@@ -33,6 +34,7 @@ const { tree, namePath } = useGroups()
 const { ask } = useConfirm()
 const { prefs } = usePreferences()
 const { focusSignal, focusQuickAdd } = useQuickAdd()
+const route = useRoute()
 
 const isDetailOpen = ref(false)
 const detailId = ref<number | null>(null)
@@ -41,6 +43,27 @@ const detailId = ref<number | null>(null)
 const detailTodo = computed<TodoWithGroup | null>(
   () => todos.value.find(todo => todo.id === detailId.value) ?? null
 )
+
+// Deep linking: `/?todo=123` opens detail dialog for that activity
+function checkDeepLink() {
+  const queryParam = route.query.todo
+  if (!queryParam) return
+  const targetId = Number(queryParam)
+  if (!Number.isNaN(targetId) && targetId > 0) {
+    const target = todos.value.find(t => t.id === targetId)
+    if (target) {
+      detailId.value = target.id
+      isDetailOpen.value = true
+    }
+  }
+}
+
+watch(() => route.query.todo, () => checkDeepLink(), { immediate: true })
+watch(todos, () => {
+  if (route.query.todo && !isDetailOpen.value) {
+    checkDeepLink()
+  }
+})
 
 /**
  * Where a new activity goes when nothing else is chosen: the group being viewed,
@@ -106,7 +129,13 @@ async function handleClearCompleted() {
   await clearCompleted()
 }
 
-function handleDetailSave(payload: { id: number, title: string, groupId: string | null }) {
+function handleDetailSave(payload: {
+  id: number
+  title: string
+  groupId: string | null
+  dueAt: string | null
+  dueAllDay: boolean
+}) {
   const todo = todos.value.find(item => item.id === payload.id)
   if (!todo) return
 
@@ -115,6 +144,12 @@ function handleDetailSave(payload: { id: number, title: string, groupId: string 
   }
   if ((payload.groupId ?? null) !== (todo.group_id ?? null)) {
     updateTodoGroup(payload.id, payload.groupId)
+  }
+  if (payload.dueAt !== todo.due_at || payload.dueAllDay !== Boolean(todo.due_all_day)) {
+    updateTodoDueDate(payload.id, {
+      dueAt: payload.dueAt,
+      dueAllDay: payload.dueAllDay
+    })
   }
 }
 

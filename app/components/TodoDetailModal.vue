@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { TodoWithGroup } from '~/types/todo'
 import type { GroupNode } from '~/types/group'
-import { formatFullDate } from '~/utils/date'
+import { formatFullDate, buildIsoDueAt, dueBucket, dueLabel, toInputDate, toInputTime } from '~/utils/date'
 import { haptic } from '~/utils/haptics'
 import { groupMetaOf } from '~/utils/groups'
 import { usePreferences, TEXT_SIZES } from '~/composables/usePreferences'
@@ -15,7 +15,7 @@ import { useCurrentUser } from '~/composables/useCurrentUser'
  * Long activities used to be unreadable: the label was `select-none`, clamped to
  * one line by the row, and double-click opened a one-line input. This dialog shows
  * the full text (newlines preserved, selectable, scrollable), offers a larger reading
- * size, and keeps editing, moving between groups and deleting in one place.
+ * size, and keeps editing, moving between groups, setting due dates and deleting in one place.
  */
 const props = defineProps<{
   open: boolean
@@ -27,7 +27,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:open', value: boolean): void
   (e: 'toggle', todo: TodoWithGroup): void
-  (e: 'save', payload: { id: number, title: string, groupId: string | null }): void
+  (e: 'save', payload: { id: number, title: string, groupId: string | null, dueAt: string | null, dueAllDay: boolean }): void
   (e: 'delete', id: number): void
   (e: 'open-group', groupId: string): void
 }>()
@@ -40,6 +40,10 @@ const { canShare, share } = useWebShare()
 const isEditing = ref(false)
 const draftTitle = ref('')
 const draftGroupId = ref<string | null>(null)
+const draftDueDate = ref('')
+const draftDueTime = ref('18:00')
+const draftDueAllDay = ref(true)
+
 const copied = ref(false)
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
@@ -50,6 +54,14 @@ const isLong = computed(() => title.value.length > 90 || title.value.includes('\
 const charCount = computed(() => draftTitle.value.trim().length)
 const canEdit = computed(() => (props.todo ? permissionFor(props.todo) !== 'read' : true))
 const isShared = computed(() => Boolean(props.todo?.user_id && props.todo.user_id !== userId.value))
+
+const dueStatus = computed(() => {
+  if (!props.todo?.due_at) return null
+  const bucket = dueBucket(props.todo.due_at, props.todo.due_all_day)
+  const label = dueLabel(props.todo.due_at, props.todo.due_all_day)
+  return { bucket, label }
+})
+
 const sizeOptions = TEXT_SIZES.map(size => ({
   id: size.id,
   // The three buttons are the same "A", differentiated by their font size below.
@@ -68,6 +80,18 @@ function startEditing() {
   if (!props.todo || !canEdit.value) return
   draftTitle.value = props.todo.title
   draftGroupId.value = props.todo.group_id ?? null
+
+  if (props.todo.due_at) {
+    const d = new Date(props.todo.due_at)
+    draftDueDate.value = toInputDate(d)
+    draftDueTime.value = toInputTime(d)
+    draftDueAllDay.value = Boolean(props.todo.due_all_day)
+  } else {
+    draftDueDate.value = ''
+    draftDueTime.value = '18:00'
+    draftDueAllDay.value = true
+  }
+
   isEditing.value = true
   nextTick(() => {
     autosize()
@@ -81,11 +105,35 @@ function cancelEditing() {
   isEditing.value = false
 }
 
+function setQuickDraftDue(mode: 'today' | 'tomorrow' | 'next-week') {
+  const target = new Date()
+  if (mode === 'tomorrow') target.setDate(target.getDate() + 1)
+  else if (mode === 'next-week') target.setDate(target.getDate() + 7)
+  draftDueDate.value = toInputDate(target)
+}
+
+function clearDraftDue() {
+  draftDueDate.value = ''
+  draftDueTime.value = '18:00'
+  draftDueAllDay.value = true
+}
+
 function save() {
   if (!props.todo) return
   const trimmed = draftTitle.value.trim()
   if (!trimmed) return
-  emit('save', { id: props.todo.id, title: trimmed, groupId: draftGroupId.value })
+
+  const dueAt = draftDueDate.value
+    ? buildIsoDueAt(draftDueDate.value, draftDueTime.value, draftDueAllDay.value)
+    : null
+
+  emit('save', {
+    id: props.todo.id,
+    title: trimmed,
+    groupId: draftGroupId.value,
+    dueAt,
+    dueAllDay: draftDueAllDay.value
+  })
   isEditing.value = false
 }
 
@@ -219,12 +267,85 @@ watch([() => draftTitle.value, () => isEditing.value], () => {
             aria-label="Gruppo dell'attività"
           />
         </div>
+
+        <!-- Due date editor -->
+        <div class="space-y-1.5 rounded-xl border border-slate-200 bg-slate-50/50 p-3 dark:border-slate-700/60 dark:bg-slate-800/30">
+          <div class="flex items-center justify-between">
+            <label class="todo-meta font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">
+              Scadenza
+            </label>
+            <div class="flex gap-1">
+              <button
+                type="button"
+                class="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300"
+                @click="setQuickDraftDue('today')"
+              >
+                Oggi
+              </button>
+              <button
+                type="button"
+                class="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300"
+                @click="setQuickDraftDue('tomorrow')"
+              >
+                Domani
+              </button>
+              <button
+                type="button"
+                class="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300"
+                @click="setQuickDraftDue('next-week')"
+              >
+                +1 sett
+              </button>
+              <button
+                v-if="draftDueDate"
+                type="button"
+                class="rounded-md px-1.5 py-0.5 text-[11px] text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+                title="Rimuovi scadenza"
+                @click="clearDraftDue"
+              >
+                Rimuovi
+              </button>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
+            <div>
+              <label class="todo-meta mb-0.5 block text-slate-400 dark:text-slate-500">Data</label>
+              <input
+                v-model="draftDueDate"
+                type="date"
+                class="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 focus:border-accent-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              >
+            </div>
+
+            <div v-if="draftDueDate" class="space-y-1">
+              <label class="todo-meta mb-0.5 block text-slate-400 dark:text-slate-500">Orario</label>
+              <div class="flex items-center gap-2">
+                <label class="flex cursor-pointer items-center gap-1.5 text-xs text-slate-700 dark:text-slate-300">
+                  <input
+                    v-model="draftDueAllDay"
+                    type="checkbox"
+                    class="rounded border-slate-300 text-accent-600 focus:ring-accent-500"
+                  >
+                  <span>Tutto il giorno</span>
+                </label>
+                <input
+                  v-if="!draftDueAllDay"
+                  v-model="draftDueTime"
+                  type="time"
+                  class="flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 focus:border-accent-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                >
+              </div>
+            </div>
+          </div>
+        </div>
+
         <p class="todo-meta text-slate-400 dark:text-slate-500">
           {{ charCount }} caratteri · Premi ⌘/Ctrl + Invio per salvare
         </p>
       </div>
 
-      <dl class="grid grid-cols-2 gap-3 text-xs">
+      <dl class="grid grid-cols-2 gap-3 text-xs sm:grid-cols-3">
         <div class="rounded-xl bg-slate-50 px-3 py-2 dark:bg-slate-800/50">
           <dt class="todo-meta font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">Creata</dt>
           <dd class="mt-0.5 text-slate-700 dark:text-slate-200">{{ formatFullDate(todo.created_at) || '—' }}</dd>
@@ -232,6 +353,28 @@ watch([() => draftTitle.value, () => isEditing.value], () => {
         <div class="rounded-xl bg-slate-50 px-3 py-2 dark:bg-slate-800/50">
           <dt class="todo-meta font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">Stato</dt>
           <dd class="mt-0.5 text-slate-700 dark:text-slate-200">{{ todo.completed ? 'Completata' : 'Da completare' }}</dd>
+        </div>
+        <div class="col-span-2 rounded-xl bg-slate-50 px-3 py-2 sm:col-span-1 dark:bg-slate-800/50">
+          <dt class="todo-meta font-semibold tracking-wider text-slate-400 uppercase dark:text-slate-500">Scadenza</dt>
+          <dd class="mt-0.5 flex items-center gap-1.5 text-slate-700 dark:text-slate-200">
+            <template v-if="todo.due_at">
+              <span
+                class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-semibold"
+                :class="dueStatus?.bucket === 'overdue' && !todo.completed
+                  ? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
+                  : dueStatus?.bucket === 'today' && !todo.completed
+                    ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                    : 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200'"
+              >
+                <UIcon
+                  :name="dueStatus?.bucket === 'overdue' && !todo.completed ? 'i-lucide-alert-circle' : 'i-lucide-calendar'"
+                  class="h-3 w-3"
+                />
+                {{ dueStatus?.label }}
+              </span>
+            </template>
+            <span v-else class="text-slate-400 dark:text-slate-500">Nessuna</span>
+          </dd>
         </div>
       </dl>
     </div>

@@ -1,7 +1,8 @@
 import type { Database } from '~/types/database.types'
-import type { Todo, TodoFilter, TodoScope, TodoStats, TodoWithGroup, GroupCounts } from '~/types/todo'
+import type { Todo, TodoFilter, TodoScope, TodoStats, TodoWithGroup, GroupCounts, TodoDueOptions } from '~/types/todo'
 import { usePreferences, type SortOrder } from '~/composables/usePreferences'
 import { useGroups } from '~/composables/useGroups'
+import { dueBucket } from '~/utils/date'
 
 export interface TodoSection {
   /** Group id, or '' for the implicit bucket a row without a group falls into. */
@@ -14,7 +15,7 @@ export interface TodoSection {
 const GROUP_COLUMNS = 'id, name, parent_id, path, depth, tone, icon'
 
 function emptyStats(): TodoStats {
-  return { total: 0, active: 0, completed: 0, percentage: 0 }
+  return { total: 0, active: 0, completed: 0, percentage: 0, overdue: 0, dueToday: 0 }
 }
 
 /**
@@ -109,7 +110,11 @@ export function useTodos() {
     return (todo.group?.name || todo.group_name || 'Generale').trim() || 'Generale'
   }
 
-  async function addTodo(rawTitle: string, groupId?: string | null): Promise<boolean> {
+  async function addTodo(
+    rawTitle: string,
+    groupId?: string | null,
+    dueOptions?: TodoDueOptions
+  ): Promise<boolean> {
     const title = rawTitle.trim()
     if (!title) return false
 
@@ -118,7 +123,11 @@ export function useTodos() {
       const payload: Database['public']['Tables']['todos']['Insert'] = {
         title,
         group_id: groupId ?? null,
-        completed: false
+        completed: false,
+        due_at: dueOptions?.dueAt ?? null,
+        due_all_day: dueOptions?.dueAllDay ?? false,
+        reminder_minutes: dueOptions?.reminderMinutes ?? null,
+        timezone: dueOptions?.timezone ?? (typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : 'UTC')
       }
 
       if (userId.value) {
@@ -282,6 +291,55 @@ export function useTodos() {
     }
   }
 
+  async function updateTodoDueDate(id: number, dueOptions: TodoDueOptions): Promise<boolean> {
+    const snapshot = todos.value.find(todo => todo.id === id)
+    if (!snapshot) return false
+
+    const changes = {
+      due_at: dueOptions.dueAt ?? null,
+      due_all_day: dueOptions.dueAllDay ?? false,
+      reminder_minutes: dueOptions.reminderMinutes ?? null,
+      timezone: dueOptions.timezone ?? (typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : 'UTC')
+    }
+
+    patch(id, changes)
+    activeActionId.value = id
+
+    try {
+      const { data, error } = await supabase
+        .from('todos')
+        .update(changes)
+        .eq('id', id)
+        .select('id')
+
+      if (error) {
+        restore(id, snapshot)
+        toast.add({
+          title: 'Errore scadenza',
+          description: error.message,
+          color: 'error'
+        })
+        return false
+      } else if (!data || data.length === 0) {
+        restore(id, snapshot)
+        notPermitted('Scadenza non salvata')
+        return false
+      } else {
+        toast.add({
+          title: 'Scadenza aggiornata',
+          color: 'success'
+        })
+        return true
+      }
+    } catch (err: unknown) {
+      console.error('Error updating due date:', err)
+      restore(id, snapshot)
+      return false
+    } finally {
+      activeActionId.value = null
+    }
+  }
+
   async function deleteTodo(id: number) {
     const target = todos.value.find(todo => todo.id === id)
     const snapshot = [...todos.value]
@@ -378,11 +436,28 @@ export function useTodos() {
 
   function countStats(list: TodoWithGroup[]): TodoStats {
     const total = list.length
-    const completed = list.filter(todo => Boolean(todo.completed)).length
+    let completed = 0
+    let overdue = 0
+    let dueToday = 0
+
+    const now = new Date()
+
+    for (const todo of list) {
+      if (todo.completed) {
+        completed++
+      } else {
+        if (todo.due_at) {
+          const bucket = dueBucket(todo.due_at, todo.due_all_day, now)
+          if (bucket === 'overdue') overdue++
+          else if (bucket === 'today') dueToday++
+        }
+      }
+    }
+
     const active = total - completed
     const percentage = total > 0 ? Math.round((completed / total) * 100) : 0
 
-    return { total, active, completed, percentage }
+    return { total, active, completed, percentage, overdue, dueToday }
   }
 
   const stats = computed<TodoStats>(() => countStats(todos.value))
@@ -471,6 +546,26 @@ export function useTodos() {
   function sortTodos(list: TodoWithGroup[], order: SortOrder): TodoWithGroup[] {
     const sorted = [...list]
     switch (order) {
+      case 'due-asc': {
+        sorted.sort((a, b) => {
+          // Completed items go to the end if not filtering
+          if (Boolean(a.completed) !== Boolean(b.completed)) {
+            return Number(Boolean(a.completed)) - Number(Boolean(b.completed))
+          }
+          // Both have due_at: earliest first
+          if (a.due_at && b.due_at) {
+            const diff = Date.parse(a.due_at) - Date.parse(b.due_at)
+            if (diff !== 0) return diff
+            return timestampOf(b) - timestampOf(a)
+          }
+          // Items with due date come first
+          if (a.due_at && !b.due_at) return -1
+          if (!a.due_at && b.due_at) return 1
+          // Neither has due date: newest first
+          return timestampOf(b) - timestampOf(a)
+        })
+        break
+      }
       case 'created-asc':
         sorted.sort((a, b) => timestampOf(a) - timestampOf(b))
         break
@@ -531,6 +626,8 @@ export function useTodos() {
       result = result.filter(todo => !todo.completed)
     } else if (filter.value === 'completed') {
       result = result.filter(todo => Boolean(todo.completed))
+    } else if (filter.value === 'due') {
+      result = result.filter(todo => !todo.completed && Boolean(todo.due_at))
     } else if (prefs.value.hideCompleted) {
       // Only meaningful for the "Tutti" tab: the other tabs already say which
       // half of the list you asked for.
@@ -618,6 +715,7 @@ export function useTodos() {
     toggleTodo,
     updateTodoTitle,
     updateTodoGroup,
+    updateTodoDueDate,
     deleteTodo,
     clearCompleted
   }

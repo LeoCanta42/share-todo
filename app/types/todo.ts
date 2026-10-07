@@ -11,8 +11,15 @@ export type TodoShareUpdate = Database['public']['Tables']['todo_shares']['Updat
 
 export type TodoPermission = TodoShare['permission']
 
-export type TodoFilter = 'all' | 'active' | 'completed'
+export type TodoFilter = 'all' | 'active' | 'completed' | 'due'
 export type TodoScope = 'all' | 'mine' | 'shared'
+
+export interface TodoDueOptions {
+  dueAt?: string | null
+  dueAllDay?: boolean
+  reminderMinutes?: number | null
+  timezone?: string | null
+}
 
 /** The selection used by the list and the group page: one group, or everything. */
 export type TodoGroupSelection = 'all' | (string & {})
@@ -22,6 +29,8 @@ export interface TodoStats {
   active: number
   completed: number
   percentage: number
+  overdue: number
+  dueToday: number
 }
 
 /**

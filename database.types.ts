@@ -173,31 +173,82 @@ export type Database = {
           },
         ]
       }
+      push_subscriptions: {
+        Row: {
+          auth: string
+          created_at: string | null
+          endpoint: string
+          failure_count: number
+          id: number
+          last_seen_at: string | null
+          p256dh: string
+          user_agent: string | null
+          user_id: string
+        }
+        Insert: {
+          auth: string
+          created_at?: string | null
+          endpoint: string
+          failure_count?: number
+          id?: number
+          last_seen_at?: string | null
+          p256dh: string
+          user_agent?: string | null
+          user_id?: string
+        }
+        Update: {
+          auth?: string
+          created_at?: string | null
+          endpoint?: string
+          failure_count?: number
+          id?: number
+          last_seen_at?: string | null
+          p256dh?: string
+          user_agent?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
       todos: {
         Row: {
           completed: boolean | null
           created_at: string | null
+          due_all_day: boolean
+          due_at: string | null
           group_id: string | null
           group_name: string | null
           id: number
+          reminder_minutes: number | null
+          reminder_sent_at: string | null
+          timezone: string | null
           title: string
           user_id: string | null
         }
         Insert: {
           completed?: boolean | null
           created_at?: string | null
+          due_all_day?: boolean
+          due_at?: string | null
           group_id?: string | null
           group_name?: string | null
           id?: number
+          reminder_minutes?: number | null
+          reminder_sent_at?: string | null
+          timezone?: string | null
           title: string
           user_id?: string | null
         }
         Update: {
           completed?: boolean | null
           created_at?: string | null
+          due_all_day?: boolean
+          due_at?: string | null
           group_id?: string | null
           group_name?: string | null
           id?: number
+          reminder_minutes?: number | null
+          reminder_sent_at?: string | null
+          timezone?: string | null
           title?: string
           user_id?: string | null
         }

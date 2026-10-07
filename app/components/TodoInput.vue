@@ -2,7 +2,9 @@
 import { useGroups } from '~/composables/useGroups'
 import { MAX_GROUP_DEPTH } from '~/utils/groupTree'
 import { groupMetaOf } from '~/utils/groups'
+import { buildIsoDueAt, dueLabel, toInputDate, toInputTime } from '~/utils/date'
 import type { GroupNode } from '~/types/group'
+import type { TodoDueOptions } from '~/types/todo'
 
 /**
  * Quick-add bar.
@@ -10,8 +12,8 @@ import type { GroupNode } from '~/types/group'
  * A growing textarea: Enter adds, Shift+Enter starts a new line, so a long
  * multi-line activity can be written straight from the bar. The group picker opens a
  * tree (groups nest now) with a search over the whole tree, and can create a
- * sub-group under the group that is currently selected — which is the only place the
- * nesting is ever "decided", so the button says exactly what it will do.
+ * sub-group under the group that is currently selected.
+ * Supports setting a due date / time with quick chips (Oggi, Domani, +1 settimana).
  */
 const props = defineProps<{
   loading?: boolean
@@ -25,7 +27,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'add', title: string, groupId: string | null): void
+  (e: 'add', title: string, groupId: string | null, dueOptions?: TodoDueOptions): void
 }>()
 
 const { flat, createGroup, depthOfChild, canAddChild } = useGroups()
@@ -33,14 +35,28 @@ const { flat, createGroup, depthOfChild, canAddChild } = useGroups()
 const inputTitle = ref((props.initialTitle ?? '').trim())
 const selectedGroupId = ref<string | null>(props.defaultGroupId ?? null)
 const isPickerOpen = ref(false)
+const isDuePickerOpen = ref(false)
 const newGroupName = ref('')
 const groupFilter = ref('')
 const isFocused = ref(false)
 const inputRef = ref<HTMLTextAreaElement | null>(null)
 const pickerRef = ref<HTMLElement | null>(null)
+const duePickerRef = ref<HTMLElement | null>(null)
+
+// Due date state
+const dueDate = ref('')
+const dueTime = ref('18:00')
+const dueAllDay = ref(true)
 
 const selected = computed(() => flat.value.find(node => node.group.id === selectedGroupId.value) ?? null)
 const selectedMeta = computed(() => groupMetaOf(selected.value?.group, 'Generale'))
+
+const hasDueDate = computed(() => Boolean(dueDate.value))
+const formattedDueLabel = computed(() => {
+  if (!dueDate.value) return ''
+  const iso = buildIsoDueAt(dueDate.value, dueTime.value, dueAllDay.value)
+  return dueLabel(iso, dueAllDay.value)
+})
 
 /** The tree, filtered by the picker's search box (a flat, indented list). */
 const visibleGroups = computed(() => {
@@ -98,6 +114,24 @@ function selectGroup(id: string) {
   nextTick(() => inputRef.value?.focus())
 }
 
+function setQuickDue(mode: 'today' | 'tomorrow' | 'next-week') {
+  const target = new Date()
+  if (mode === 'tomorrow') {
+    target.setDate(target.getDate() + 1)
+  } else if (mode === 'next-week') {
+    target.setDate(target.getDate() + 7)
+  }
+  dueDate.value = toInputDate(target)
+  isDuePickerOpen.value = false
+}
+
+function clearDueDate() {
+  dueDate.value = ''
+  dueTime.value = '18:00'
+  dueAllDay.value = true
+  isDuePickerOpen.value = false
+}
+
 async function createSubGroup() {
   const name = newGroupName.value.trim()
   if (!name) return
@@ -115,8 +149,16 @@ function handleSubmit() {
   const title = inputTitle.value.trim()
   if (!title || props.loading) return
 
-  emit('add', title, selectedGroupId.value)
+  const dueOptions: TodoDueOptions | undefined = dueDate.value
+    ? {
+        dueAt: buildIsoDueAt(dueDate.value, dueTime.value, dueAllDay.value),
+        dueAllDay: dueAllDay.value
+      }
+    : undefined
+
+  emit('add', title, selectedGroupId.value, dueOptions)
   inputTitle.value = ''
+  clearDueDate()
   nextTick(() => {
     focus()
     autosize()
@@ -132,15 +174,17 @@ function handleKeydown(event: KeyboardEvent) {
 
 function onOutside(event: PointerEvent) {
   const target = event.target as Node | null
-  if (!isPickerOpen.value) return
-  if (pickerRef.value && target && !pickerRef.value.contains(target)) {
+  if (pickerRef.value && isPickerOpen.value && target && !pickerRef.value.contains(target)) {
     isPickerOpen.value = false
+  }
+  if (duePickerRef.value && isDuePickerOpen.value && target && !duePickerRef.value.contains(target)) {
+    isDuePickerOpen.value = false
   }
 }
 
-watch(isPickerOpen, (open) => {
+watch([isPickerOpen, isDuePickerOpen], ([openPicker, openDue]) => {
   if (!import.meta.client) return
-  if (open) {
+  if (openPicker || openDue) {
     document.addEventListener('pointerdown', onOutside, true)
   } else {
     document.removeEventListener('pointerdown', onOutside, true)
@@ -267,6 +311,116 @@ onBeforeUnmount(() => {
               >
                 «{{ selected?.group.name }}» è già al livello più profondo ({{ MAX_GROUP_DEPTH }} livelli).
               </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Due date picker -->
+        <div ref="duePickerRef" class="relative">
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-semibold shadow-xs transition hover:opacity-90 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+            :class="hasDueDate
+              ? 'border-accent-300 bg-accent-50 text-accent-700 dark:border-accent-800 dark:bg-accent-950 dark:text-accent-300'
+              : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'"
+            :aria-expanded="isDuePickerOpen"
+            aria-label="Imposta scadenza"
+            @click="isDuePickerOpen = !isDuePickerOpen"
+          >
+            <UIcon name="i-lucide-calendar" class="h-3.5 w-3.5" />
+            <span class="max-w-[8rem] truncate">{{ hasDueDate ? formattedDueLabel : 'Scadenza' }}</span>
+            <button
+              v-if="hasDueDate"
+              type="button"
+              class="ml-0.5 rounded-full p-0.5 hover:bg-accent-200/60 dark:hover:bg-accent-900"
+              title="Rimuovi scadenza"
+              @click.stop="clearDueDate"
+            >
+              <UIcon name="i-lucide-x" class="h-3 w-3" />
+            </button>
+          </button>
+
+          <div
+            v-if="isDuePickerOpen"
+            class="anim-dropdown absolute bottom-full left-0 z-50 mb-2 w-[17rem] rounded-2xl border border-slate-200 bg-white p-3 shadow-xl dark:border-slate-800 dark:bg-slate-900"
+          >
+            <p class="todo-meta mb-2 font-semibold text-slate-500 dark:text-slate-400">
+              Imposta scadenza
+            </p>
+
+            <!-- Quick chips -->
+            <div class="mb-3 flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                class="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                @click="setQuickDue('today')"
+              >
+                Oggi
+              </button>
+              <button
+                type="button"
+                class="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                @click="setQuickDue('tomorrow')"
+              >
+                Domani
+              </button>
+              <button
+                type="button"
+                class="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                @click="setQuickDue('next-week')"
+              >
+                +1 settimana
+              </button>
+            </div>
+
+            <!-- Custom date & time input -->
+            <div class="space-y-2 border-t border-slate-100 pt-2.5 dark:border-slate-800">
+              <div>
+                <label class="todo-meta mb-1 block text-slate-400 dark:text-slate-500">Data</label>
+                <input
+                  v-model="dueDate"
+                  type="date"
+                  class="w-full rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs text-slate-800 focus:border-accent-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                >
+              </div>
+
+              <div class="flex items-center justify-between pt-1">
+                <label class="flex items-center gap-1.5 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
+                  <input
+                    v-model="dueAllDay"
+                    type="checkbox"
+                    class="rounded border-slate-300 text-accent-600 focus:ring-accent-500"
+                  >
+                  <span>Tutto il giorno</span>
+                </label>
+              </div>
+
+              <div v-if="!dueAllDay">
+                <label class="todo-meta mb-1 block text-slate-400 dark:text-slate-500">Ora</label>
+                <input
+                  v-model="dueTime"
+                  type="time"
+                  class="w-full rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs text-slate-800 focus:border-accent-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                >
+              </div>
+            </div>
+
+            <div class="mt-3 flex items-center justify-between border-t border-slate-100 pt-2 dark:border-slate-800">
+              <button
+                v-if="hasDueDate"
+                type="button"
+                class="text-xs text-red-600 hover:underline dark:text-red-400"
+                @click="clearDueDate"
+              >
+                Rimuovi
+              </button>
+              <button
+                type="button"
+                class="ml-auto rounded-lg bg-accent-600 px-3 py-1 text-xs font-semibold text-white hover:bg-accent-700"
+                @click="isDuePickerOpen = false"
+              >
+                Fine
+              </button>
             </div>
           </div>
         </div>

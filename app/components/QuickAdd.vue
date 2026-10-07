@@ -27,6 +27,8 @@ const emit = defineEmits<{
   (e: 'created'): void
 }>()
 
+import type { TodoDueOptions } from '~/types/todo'
+
 const { addTodo, isAdding } = useTodos()
 
 type Mode = 'todo' | 'note'
@@ -38,8 +40,8 @@ const modeOptions = [
   { id: 'note', label: 'Nota', icon: 'i-lucide-notebook-pen' }
 ]
 
-async function handleAddTodo(title: string, groupId: string | null) {
-  const created = await addTodo(title, groupId)
+async function handleAddTodo(title: string, groupId: string | null, dueOptions?: TodoDueOptions) {
+  const created = await addTodo(title, groupId, dueOptions)
   if (created) {
     emit('created')
   }

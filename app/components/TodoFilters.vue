@@ -27,10 +27,13 @@ const { prefs, update } = usePreferences()
 
 const hasSharedTasks = computed(() => scopedTodos.value.some(t => isShared(t)))
 
+const totalDue = computed(() => scopedTodos.value.filter(t => !t.completed && Boolean(t.due_at)).length)
+
 const filterOptions = computed(() => [
-  { id: 'all', label: 'Tutti', count: scopedStats.value.total },
-  { id: 'active', label: 'Da fare', count: scopedStats.value.active },
-  { id: 'completed', label: 'Fatti', count: scopedStats.value.completed }
+  { id: 'all' as const, label: 'Tutti', count: scopedStats.value.total },
+  { id: 'active' as const, label: 'Da fare', count: scopedStats.value.active },
+  { id: 'due' as const, label: 'In scadenza', count: totalDue.value, isUrgent: scopedStats.value.overdue > 0 },
+  { id: 'completed' as const, label: 'Fatti', count: scopedStats.value.completed }
 ])
 
 const scopeOptions = [
@@ -64,19 +67,23 @@ const sortModel = computed({
           v-for="item in filterOptions"
           :key="item.id"
           type="button"
-          class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+          class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold whitespace-nowrap transition focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
           :class="filter === item.id
             ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-900 dark:text-white'
             : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'"
           :aria-pressed="filter === item.id"
-          @click="filter = item.id as typeof filter"
+          @click="filter = item.id"
         >
           <span>{{ item.label }}</span>
           <span
-            class="rounded-full px-1.5 text-[10px] font-bold"
-            :class="filter === item.id
-              ? 'bg-accent-100 text-accent-700 dark:bg-accent-950 dark:text-accent-300'
-              : 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300'"
+            class="rounded-full px-1.5 text-[10px] font-bold transition-colors"
+            :class="[
+              item.isUrgent
+                ? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
+                : filter === item.id
+                  ? 'bg-accent-100 text-accent-700 dark:bg-accent-950 dark:text-accent-300'
+                  : 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+            ]"
           >
             {{ item.count }}
           </span>

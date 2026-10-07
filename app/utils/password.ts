@@ -5,7 +5,7 @@
  * `admin_set_password` enforces server-side): keeping them equal means the client
  * never offers a password the database will reject.
  */
-export const MIN_PASSWORD_LENGTH = 6
+export const MIN_PASSWORD_LENGTH = 8
 
 interface CharClass {
   chars: string

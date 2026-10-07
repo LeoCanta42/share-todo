@@ -3,7 +3,7 @@ import type { GroupToneId } from '~/utils/groups'
 export type AccentId = 'emerald' | 'teal' | 'sky' | 'blue' | 'indigo' | 'violet' | 'rose' | 'amber'
 export type Density = 'compact' | 'cozy' | 'comfortable'
 export type TextSize = 'small' | 'normal' | 'large'
-export type SortOrder = 'created-desc' | 'created-asc' | 'title-asc' | 'group' | 'active-first'
+export type SortOrder = 'created-desc' | 'created-asc' | 'title-asc' | 'group' | 'active-first' | 'due-asc'
 
 export interface AccentOption {
   id: AccentId
@@ -39,6 +39,7 @@ export const TEXT_SIZES: { id: TextSize, label: string, hint: string }[] = [
 
 export const SORT_ORDERS: { id: SortOrder, label: string }[] = [
   { id: 'created-desc', label: 'Più recenti prima' },
+  { id: 'due-asc', label: 'Scadenza più vicina' },
   { id: 'created-asc', label: 'Più vecchie prima' },
   { id: 'active-first', label: 'Da fare prima' },
   { id: 'title-asc', label: 'Titolo (A–Z)' },
