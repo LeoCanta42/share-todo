@@ -20,6 +20,7 @@ const {
   selectedGroupId,
   groupNameOf,
   toggleTodo,
+  toggleTodos,
   updateTodoTitle,
   updateTodoGroup,
   updateTodoDueDate,
@@ -175,12 +176,16 @@ function clearFilters() {
     </section>
 
     <section v-if="scopedStats.total > 0" aria-label="Filtri e ricerca">
-      <TodoFilters @clear-completed="handleClearCompleted" />
+      <TodoFilters
+        @clear-completed="handleClearCompleted"
+        @toggle-all="(todosToToggle) => toggleTodos(todosToToggle)"
+      />
     </section>
 
     <section aria-label="Elenco attività">
       <TodoList
         @toggle="toggleTodo"
+        @toggle-all="(todosToToggle) => toggleTodos(todosToToggle)"
         @update-title="updateTodoTitle"
         @update-group="updateTodoGroup"
         @open-group="openGroup"

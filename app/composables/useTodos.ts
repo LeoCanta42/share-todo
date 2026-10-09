@@ -206,6 +206,76 @@ export function useTodos() {
     }
   }
 
+  async function toggleTodos(targetTodos: TodoWithGroup[], forceCompleted?: boolean) {
+    if (!targetTodos.length) return
+
+    const allCompleted = targetTodos.every(todo => todo.completed)
+    const nextCompleted = forceCompleted !== undefined ? forceCompleted : !allCompleted
+
+    const toChange = targetTodos.filter(todo => Boolean(todo.completed) !== nextCompleted)
+    if (toChange.length === 0) return
+
+    const ids = toChange.map(t => t.id)
+    const snapshots = new Map(toChange.map(t => [t.id, { ...t }]))
+
+    // Optimistic local update
+    todos.value = todos.value.map(todo => {
+      if (snapshots.has(todo.id)) {
+        return { ...todo, completed: nextCompleted }
+      }
+      return todo
+    })
+
+    try {
+      const { data, error } = await supabase
+        .from('todos')
+        .update({ completed: nextCompleted })
+        .in('id', ids)
+        .select('id')
+
+      if (error) {
+        todos.value = todos.value.map(todo => snapshots.get(todo.id) ?? todo)
+        toast.add({
+          title: 'Errore aggiornamento',
+          description: error.message,
+          color: 'error'
+        })
+        return
+      }
+
+      const updatedIds = new Set((data ?? []).map(row => row.id))
+      if (updatedIds.size < ids.length) {
+        // Restore items that were not updated due to permissions
+        todos.value = todos.value.map(todo => {
+          if (snapshots.has(todo.id) && !updatedIds.has(todo.id)) {
+            return snapshots.get(todo.id)!
+          }
+          return todo
+        })
+
+        if (updatedIds.size === 0) {
+          notPermitted('Spunta non salvata')
+          return
+        }
+
+        toast.add({
+          title: 'Aggiornamento parziale',
+          description: `${updatedIds.size} di ${ids.length} attività aggiornate: le altre sono in sola lettura.`,
+          color: 'warning'
+        })
+      } else {
+        toast.add({
+          title: nextCompleted ? 'Tutte completate' : 'Tutte da fare',
+          description: `${updatedIds.size} ${updatedIds.size === 1 ? 'attività' : 'attività'} ${nextCompleted ? 'segnata come completata' : 'riportata da fare'}.`,
+          color: 'success'
+        })
+      }
+    } catch (err: unknown) {
+      console.error('Error toggling todos:', err)
+      todos.value = todos.value.map(todo => snapshots.get(todo.id) ?? todo)
+    }
+  }
+
   async function updateTodoTitle(id: number, newTitle: string) {
     const trimmed = newTitle.trim()
     if (!trimmed) return
@@ -713,6 +783,7 @@ export function useTodos() {
     loadTodos,
     addTodo,
     toggleTodo,
+    toggleTodos,
     updateTodoTitle,
     updateTodoGroup,
     updateTodoDueDate,

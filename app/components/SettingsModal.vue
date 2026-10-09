@@ -25,10 +25,15 @@ const { groupCounts, loadTodos } = useTodos()
 const { notes, noteCountsDeep, loadNotes } = useNotes()
 const { tree, flat, groups, byId, loadGroups, createGroup, renameGroup, setGroupLook, moveGroup, removeGroup, isOwn, canAddChild } = useGroups()
 const { canInstall, install, needRefresh, updateApp, isIos, offlineReady, isInstalled, manualInstallHint } = usePwa()
-const { changePassword, loading: authLoading } = useAuth()
+const { changePassword, logout, loading: authLoading } = useAuth()
 const { userEmail } = useCurrentUser()
 const { ask } = useConfirm()
 const toast = useToast()
+
+async function handleLogout() {
+  emit('update:open', false)
+  await logout()
+}
 
 type Tab = 'aspetto' | 'attivita' | 'gruppi' | 'sicurezza' | 'app'
 const tab = ref<Tab>('aspetto')
@@ -620,16 +625,28 @@ async function handleInstall() {
       <!-- ---------------------------------------------------------------- -->
       <section v-else-if="tab === 'sicurezza'" class="anim-fade space-y-4">
         <div class="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
-          <div class="flex items-start gap-3">
-            <span class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-accent-50 text-accent-600 dark:bg-accent-950/50 dark:text-accent-400">
-              <UIcon name="i-lucide-user-round" class="h-5 w-5" />
-            </span>
-            <div class="min-w-0">
-              <h3 class="text-sm font-bold text-slate-900 dark:text-white">Il tuo account</h3>
-              <p class="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">
-                {{ userEmail ?? '—' }}
-              </p>
+          <div class="flex items-center justify-between gap-3">
+            <div class="flex items-start gap-3 min-w-0">
+              <span class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-accent-50 text-accent-600 dark:bg-accent-950/50 dark:text-accent-400">
+                <UIcon name="i-lucide-user-round" class="h-5 w-5" />
+              </span>
+              <div class="min-w-0">
+                <h3 class="text-sm font-bold text-slate-900 dark:text-white">Il tuo account</h3>
+                <p class="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">
+                  {{ userEmail ?? '—' }}
+                </p>
+              </div>
             </div>
+            <UButton
+              color="error"
+              variant="soft"
+              size="sm"
+              icon="i-lucide-log-out"
+              class="rounded-xl font-semibold flex-shrink-0"
+              @click="handleLogout"
+            >
+              Disconnetti
+            </UButton>
           </div>
         </div>
 

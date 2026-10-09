@@ -4,6 +4,7 @@ import { useGroups } from '~/composables/useGroups'
 import { usePreferences } from '~/composables/usePreferences'
 import { useShares } from '~/composables/useShares'
 import { groupMetaOf } from '~/utils/groups'
+import { haptic } from '~/utils/haptics'
 import type { GroupMeta } from '~/utils/groups'
 import type { GroupNode } from '~/types/group'
 import type { TodoWithGroup } from '~/types/todo'
@@ -21,6 +22,7 @@ interface Row {
  */
 const emit = defineEmits<{
   (e: 'toggle', todo: TodoWithGroup): void
+  (e: 'toggleAll', todos: TodoWithGroup[]): void
   (e: 'updateTitle', id: number, newTitle: string): void
   (e: 'updateGroup', id: number, groupId: string | null): void
   (e: 'delete', id: number): void
@@ -81,6 +83,11 @@ const sections = computed(() => groupedTodos.value.map(section => ({
   name: section.name,
   rows: toRows(section.todos)
 })))
+
+function handleToggleSection(todosToToggle: TodoWithGroup[]) {
+  haptic(12)
+  emit('toggleAll', todosToToggle)
+}
 </script>
 
 <template>
@@ -132,6 +139,28 @@ const sections = computed(() => groupedTodos.value.map(section => ({
             {{ section.rows.length }}
           </span>
           <span class="h-px flex-1 bg-gradient-to-r from-slate-200 to-transparent dark:from-slate-800" />
+
+          <button
+            v-if="section.rows.some(r => r.canEdit)"
+            type="button"
+            class="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-xs font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
+            :class="section.rows.every(r => r.todo.completed)
+              ? 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+              : 'bg-accent-50 text-accent-700 hover:bg-accent-100 dark:bg-accent-950/60 dark:text-accent-300 dark:hover:bg-accent-900/80'"
+            :title="section.rows.every(r => r.todo.completed)
+              ? `Deseleziona tutte le attività in ${section.name}`
+              : `Seleziona tutte le attività in ${section.name}`"
+            :aria-label="section.rows.every(r => r.todo.completed)
+              ? `Deseleziona tutte in ${section.name}`
+              : `Seleziona tutte in ${section.name}`"
+            @click="handleToggleSection(section.rows.map(r => r.todo))"
+          >
+            <UIcon
+              :name="section.rows.every(r => r.todo.completed) ? 'i-lucide-check-check' : 'i-lucide-check'"
+              class="h-3.5 w-3.5"
+            />
+            <span class="todo-meta">{{ section.rows.every(r => r.todo.completed) ? 'Deseleziona tutti' : 'Seleziona tutti' }}</span>
+          </button>
         </header>
 
         <TransitionGroup tag="div" name="todo-list" class="space-y-2">

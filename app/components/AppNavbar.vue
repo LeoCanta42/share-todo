@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import type { DropdownMenuItem } from '@nuxt/ui'
 import { useAppearance } from '~/composables/useAppearance'
 import { usePwa } from '~/composables/usePwa'
 
@@ -12,10 +11,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'openShare'): void
   (e: 'openSettings'): void
-  (e: 'logout'): void
 }>()
 
-const { theme, setTheme, isDark } = useAppearance()
+const { setTheme, isDark } = useAppearance()
 const { canInstall, isInstalled, needRefresh, install, updateApp } = usePwa()
 
 const route = useRoute()
@@ -23,8 +21,7 @@ const route = useRoute()
 const isDarkTheme = computed(() => isDark.value)
 
 /**
- * The app is split into routed pages, so the header carries the navigation: the
- * list of activities, the notes, and — only for an admin — the user management page.
+ * Header navigation: Activities, Notes, and Admin (for administrators).
  */
 const links = computed(() => {
   const items = [
@@ -44,36 +41,10 @@ function isActive(to: string): boolean {
   return route.path === to || route.path.startsWith(`${to}/`)
 }
 
-const themeItems = computed<DropdownMenuItem[][]>(() => [[
-  { label: 'Tema chiaro', icon: 'i-lucide-sun', type: 'checkbox', checked: theme.value === 'light', onSelect: () => setTheme('light') },
-  { label: 'Tema scuro', icon: 'i-lucide-moon', type: 'checkbox', checked: theme.value === 'dark', onSelect: () => setTheme('dark') },
-  { label: 'Come il sistema', icon: 'i-lucide-monitor', type: 'checkbox', checked: theme.value === 'system', onSelect: () => setTheme('system') }
-]])
-
-const menuItems = computed<DropdownMenuItem[][]>(() => {
-  const groups: DropdownMenuItem[][] = []
-
-  groups.push([
-    { label: props.user?.email ?? 'Account', type: 'label' }
-  ])
-
-  const actions: DropdownMenuItem[] = [
-    { label: 'Personalizza', icon: 'i-lucide-sliders-horizontal', onSelect: () => emit('openSettings') },
-    { label: 'Condividi', icon: 'i-lucide-share-2', onSelect: () => emit('openShare') },
-    { label: 'Installa app', icon: 'i-lucide-download', onSelect: () => install(), disabled: !canInstall.value }
-  ]
-
-  if (props.isAdmin) {
-    actions.push({ label: 'Amministrazione', icon: 'i-lucide-shield-check', onSelect: () => navigateTo('/admin') })
-  }
-
-  groups.push(actions)
-
-  groups.push([
-    { label: 'Disconnetti', icon: 'i-lucide-log-out', color: 'error', onSelect: () => emit('logout') }
-  ])
-
-  return groups
+const displayName = computed(() => {
+  const email = props.user?.email
+  if (!email) return 'Profilo'
+  return email.split('@')[0] ?? 'Profilo'
 })
 
 const userInitial = computed(() => {
@@ -86,10 +57,6 @@ const collaborators = computed(() => props.collaboratorsCount ?? 0)
 </script>
 
 <template>
-  <!-- Opaque, not a translucent bar with a backdrop filter: a sticky bar behind a
-       filter makes the browser re-blur everything scrolling underneath it on every
-       frame, which is the single most expensive thing you can put above a long list
-       on a phone. A solid bar costs nothing to composite. -->
   <header class="sticky top-0 z-30 w-full border-b border-slate-200/80 bg-white pt-safe dark:border-slate-800/80 dark:bg-slate-950">
     <div class="mx-auto flex h-16 max-w-3xl items-center justify-between gap-2 px-4 sm:px-6">
       <!-- Brand -->
@@ -107,14 +74,14 @@ const collaborators = computed(() => props.collaboratorsCount ?? 0)
         </div>
       </NuxtLink>
 
-      <div class="flex items-center gap-1 sm:gap-1.5">
-        <!-- Section navigation -->
-        <nav v-if="user" class="flex items-center gap-0.5" aria-label="Sezioni">
+      <div class="flex items-center gap-1 sm:gap-2">
+        <!-- Section navigation (desktop / tablet) -->
+        <nav v-if="user" class="hidden sm:flex items-center gap-1" aria-label="Sezioni">
           <NuxtLink
             v-for="link in links"
             :key="link.to"
             :to="link.to"
-            class="inline-flex h-8 items-center gap-1.5 rounded-xl px-2 text-xs font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none sm:px-2.5"
+            class="inline-flex h-8 items-center gap-1.5 rounded-xl px-2.5 text-xs font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none"
             :class="isActive(link.to)
               ? 'bg-accent-100 text-accent-800 dark:bg-accent-950/70 dark:text-accent-200'
               : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white'"
@@ -122,8 +89,25 @@ const collaborators = computed(() => props.collaboratorsCount ?? 0)
             :title="link.label"
           >
             <UIcon :name="link.icon" class="h-4 w-4" />
-            <span class="hidden md:inline">{{ link.label }}</span>
+            <span>{{ link.label }}</span>
           </NuxtLink>
+
+          <!-- Share button in desktop navigation -->
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-xl px-2.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
+            title="Condividi"
+            @click="emit('openShare')"
+          >
+            <UIcon name="i-lucide-share-2" class="h-4 w-4" />
+            <span>Condividi</span>
+            <span
+              v-if="collaborators > 0"
+              class="ml-0.5 rounded-full bg-accent-600 px-1.5 text-[10px] font-bold text-white"
+            >
+              {{ collaborators }}
+            </span>
+          </button>
         </nav>
 
         <!-- New version available -->
@@ -153,39 +137,7 @@ const collaborators = computed(() => props.collaboratorsCount ?? 0)
           <span class="hidden sm:inline">Installa</span>
         </UButton>
 
-        <!-- Share -->
-        <UButton
-          v-if="user"
-          variant="subtle"
-          color="neutral"
-          size="xs"
-          icon="i-lucide-share-2"
-          class="hidden rounded-xl font-medium sm:inline-flex"
-          @click="emit('openShare')"
-        >
-          <span class="hidden sm:inline">Condividi</span>
-          <span
-            v-if="collaborators > 0"
-            class="ml-0.5 rounded-full bg-accent-600 px-1.5 text-[10px] font-bold text-white"
-          >
-            {{ collaborators }}
-          </span>
-        </UButton>
-
-        <!-- Settings -->
-        <UButton
-          v-if="user"
-          variant="ghost"
-          color="neutral"
-          size="sm"
-          icon="i-lucide-sliders-horizontal"
-          class="hidden rounded-xl sm:inline-flex"
-          aria-label="Personalizza l'app"
-          title="Personalizza"
-          @click="emit('openSettings')"
-        />
-
-        <!-- Theme -->
+        <!-- Theme Toggle -->
         <ClientOnly>
           <UButton
             :icon="isDarkTheme ? 'i-lucide-moon' : 'i-lucide-sun'"
@@ -202,16 +154,21 @@ const collaborators = computed(() => props.collaboratorsCount ?? 0)
           </template>
         </ClientOnly>
 
-        <!-- Account menu -->
-        <UDropdownMenu v-if="user" :items="menuItems" :content="{ align: 'end' }">
-          <button
-            type="button"
-            class="ml-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-accent-100 text-xs font-bold text-accent-700 transition-colors hover:bg-accent-200 focus-visible:ring-2 focus-visible:ring-accent-500/50 focus-visible:outline-none dark:bg-accent-950/70 dark:text-accent-300"
-            :aria-label="`Account di ${user.email}`"
-          >
+        <!-- User Profile Button (opens Settings) -->
+        <button
+          v-if="user"
+          type="button"
+          class="flex items-center gap-2 rounded-xl border border-slate-200/80 bg-slate-50 p-1 pr-2.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+          title="Opzioni e account"
+          aria-label="Opzioni e account"
+          @click="emit('openSettings')"
+        >
+          <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-accent-100 text-xs font-bold text-accent-700 dark:bg-accent-950 dark:text-accent-300">
             {{ userInitial }}
-          </button>
-        </UDropdownMenu>
+          </div>
+          <span class="max-w-[120px] truncate hidden sm:inline">{{ displayName }}</span>
+          <UIcon name="i-lucide-settings" class="h-3.5 w-3.5 text-slate-400" />
+        </button>
       </div>
     </div>
   </header>

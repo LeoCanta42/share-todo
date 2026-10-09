@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { SORT_ORDERS, usePreferences } from '~/composables/usePreferences'
+import { haptic } from '~/utils/haptics'
+import type { TodoWithGroup } from '~/types/todo'
 
 /**
  * Filter toolbar: status tabs, origin (mine/shared), search and sort.
@@ -12,6 +14,7 @@ import { SORT_ORDERS, usePreferences } from '~/composables/usePreferences'
  */
 const emit = defineEmits<{
   (e: 'clearCompleted'): void
+  (e: 'toggleAll', todos: TodoWithGroup[]): void
 }>()
 
 const {
@@ -20,6 +23,7 @@ const {
   searchQuery,
   scopedStats,
   scopedTodos,
+  filteredTodos,
   isShared
 } = useTodos()
 
@@ -56,6 +60,15 @@ const sortModel = computed({
   get: () => prefs.value.sort,
   set: (value: string) => update('sort', value as typeof prefs.value.sort)
 })
+
+const allFilteredCompleted = computed(() =>
+  filteredTodos.value.length > 0 && filteredTodos.value.every(t => t.completed)
+)
+
+function handleToggleAll() {
+  haptic(12)
+  emit('toggleAll', filteredTodos.value)
+}
 </script>
 
 <template>
@@ -176,6 +189,21 @@ const sortModel = computed({
         >
           <UIcon name="i-lucide-list-tree" class="h-4 w-4" />
         </button>
+
+        <UButton
+          v-if="filteredTodos.length > 0"
+          color="neutral"
+          variant="soft"
+          size="xs"
+          :icon="allFilteredCompleted ? 'i-lucide-check-check' : 'i-lucide-check'"
+          class="rounded-lg whitespace-nowrap"
+          :title="allFilteredCompleted ? 'Deseleziona tutte le attività visibili' : 'Seleziona tutte le attività visibili'"
+          :aria-label="allFilteredCompleted ? 'Deseleziona tutte le attività visibili' : 'Seleziona tutte le attività visibili'"
+          @click="handleToggleAll"
+        >
+          <span class="hidden sm:inline">{{ allFilteredCompleted ? 'Deseleziona tutti' : 'Seleziona tutti' }}</span>
+          <span class="sm:hidden">{{ allFilteredCompleted ? 'Deseleziona' : 'Seleziona' }}</span>
+        </UButton>
 
         <UButton
           v-if="scopedStats.completed > 0"

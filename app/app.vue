@@ -114,7 +114,6 @@ watch(user, async (currentUser) => {
         :is-admin="isAdmin"
         @open-share="openShare(null)"
         @open-settings="isSettingsModalOpen = true"
-        @logout="logout"
       />
 
       <!-- Unauthenticated: the sign-in screen -->
@@ -135,9 +134,14 @@ watch(user, async (currentUser) => {
       <LazyShareModal v-model:open="isShareModalOpen" :initial-group="shareTarget" />
       <AppConfirmDialog />
 
-      <!-- Mobile shortcut back to the quick-add field. Own component on purpose:
-           the scroll flag lives there so scrolling never re-renders the app root. -->
-      <AppFab v-if="user && approvalStatus === 'approved'" @activate="focusQuickAdd" />
+      <!-- Mobile Bottom Navigation Bar -->
+      <MobileBottomNav
+        v-if="user && isApproved"
+        :is-admin="isAdmin"
+        :collaborators-count="myShares.length"
+        @open-share="openShare(null)"
+        @open-settings="isSettingsModalOpen = true"
+      />
     </div>
   </UApp>
 </template>

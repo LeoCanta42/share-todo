@@ -5,6 +5,7 @@ import { useNotes } from '~/composables/useNotes'
 import { useShareDialog } from '~/composables/useShareDialog'
 import { useConfirm } from '~/composables/useConfirm'
 import { groupMetaOf } from '~/utils/groups'
+import { haptic } from '~/utils/haptics'
 import type { GroupNode } from '~/types/group'
 
 /**
@@ -19,7 +20,7 @@ import type { GroupNode } from '~/types/group'
 const route = useRoute()
 
 const { groups, loading: groupsLoading, tree, namePath, fromNamePath, isOwn, removeGroup } = useGroups()
-const { selectedGroupId, scopedStats, groupCounts, loadTodos } = useTodos()
+const { selectedGroupId, scopedStats, scopedTodos, groupCounts, loadTodos, toggleTodos } = useTodos()
 const { noteCountsDeep, loadNotes } = useNotes()
 const { openShare } = useShareDialog()
 const { ask } = useConfirm()
@@ -118,6 +119,11 @@ async function requestDelete() {
   })
   await navigateTo('/')
 }
+
+function handleToggleAllInGroup() {
+  haptic(12)
+  toggleTodos(scopedTodos.value)
+}
 </script>
 
 <template>
@@ -167,6 +173,20 @@ async function requestDelete() {
         </div>
 
         <div class="flex flex-shrink-0 items-center gap-1">
+          <UButton
+            v-if="scopedTodos.length > 0"
+            color="neutral"
+            variant="soft"
+            size="sm"
+            :icon="counts?.total.completed === counts?.total.total ? 'i-lucide-check-check' : 'i-lucide-check'"
+            class="rounded-xl"
+            :title="counts?.total.completed === counts?.total.total ? 'Deseleziona tutte le attività del gruppo' : 'Seleziona tutte le attività del gruppo'"
+            :aria-label="counts?.total.completed === counts?.total.total ? 'Deseleziona tutte le attività del gruppo' : 'Seleziona tutte le attività del gruppo'"
+            @click="handleToggleAllInGroup"
+          >
+            <span class="hidden sm:inline">{{ counts?.total.completed === counts?.total.total ? 'Deseleziona tutti' : 'Seleziona tutti' }}</span>
+          </UButton>
+
           <UButton
             v-if="group && isOwn(group)"
             color="neutral"

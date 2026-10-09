@@ -44,13 +44,6 @@ onMounted(() => {
             <template v-if="stats.groups > 0"> · in {{ stats.groups }} gruppi</template>
           </p>
         </div>
-        <NuxtLink
-          to="/"
-          class="flex h-8 items-center gap-1.5 rounded-xl px-2.5 text-xs font-semibold text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:ring-2 focus-visible:ring-accent-500/40 focus-visible:outline-none dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
-        >
-          <UIcon name="i-lucide-list-checks" class="h-4 w-4" />
-          <span class="hidden sm:inline">Attività</span>
-        </NuxtLink>
       </div>
     </section>
 
