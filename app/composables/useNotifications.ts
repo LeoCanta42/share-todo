@@ -187,6 +187,12 @@ export function useNotifications() {
       return false
     }
 
+    refreshPermission()
+    if (permission.value !== 'granted') {
+      const granted = await requestPermission()
+      if (!granted) return false
+    }
+
     const vapidKey = (config.public.vapidPublicKey || '').trim()
     if (!vapidKey) {
       toast.add({
@@ -201,7 +207,10 @@ export function useNotifications() {
     try {
       let reg = await navigator.serviceWorker.getRegistration()
       if (!reg?.active) {
-        reg = await navigator.serviceWorker.ready
+        reg = await Promise.race([
+          navigator.serviceWorker.ready,
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 5000))
+        ])
       }
       if (!reg || !('pushManager' in reg)) {
         throw new Error('PushManager non disponibile nel service worker.')
@@ -209,16 +218,14 @@ export function useNotifications() {
 
       await reg.update().catch(() => {})
 
-      // Force unsubscribe stale browser subscription
+      // 1. Force unsubscribe stale browser subscription for this device only
       const existing = await reg.pushManager.getSubscription()
       if (existing) {
+        await supabase.from('push_subscriptions').delete().eq('endpoint', existing.endpoint).catch(() => {})
         await existing.unsubscribe().catch(() => {})
       }
 
-      // Clear any existing subscriptions for this user in Supabase
-      await supabase.from('push_subscriptions').delete().eq('user_id', user.value.id).catch(() => {})
-
-      // Re-subscribe cleanly with current key
+      // 2. Re-subscribe cleanly with current key
       const newSub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(vapidKey)
@@ -238,7 +245,19 @@ export function useNotifications() {
         last_seen_at: new Date().toISOString()
       }, { onConflict: 'endpoint' })
 
-      if (error) throw error
+      if (error) {
+        console.warn('Upsert failed, trying clean insert fallback:', error)
+        await supabase.from('push_subscriptions').delete().eq('endpoint', json.endpoint).catch(() => {})
+        const { error: insErr } = await supabase.from('push_subscriptions').insert({
+          user_id: user.value.id,
+          endpoint: json.endpoint,
+          p256dh: json.keys.p256dh,
+          auth: json.keys.auth,
+          user_agent: navigator.userAgent,
+          last_seen_at: new Date().toISOString()
+        })
+        if (insErr) throw insErr
+      }
 
       toast.add({
         title: 'Notifiche sincronizzate!',
@@ -359,18 +378,35 @@ export function useNotifications() {
         })
       }
 
-      const url = (supabase as any)?.supabaseUrl || 'https://newhtivqunqtjswkxwhp.supabase.co'
-      const res = await fetch(`${url}/functions/v1/send-reminders`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          testUserId: user.value.id,
-          delaySeconds
+      let sentCount = 0
+      try {
+        const { data, error } = await supabase.functions.invoke('send-reminders', {
+          body: {
+            testUserId: user.value.id,
+            delaySeconds
+          }
         })
-      })
+        if (!error && data) {
+          sentCount = data.sent ?? 0
+        } else if (error) {
+          throw error
+        }
+      } catch (invokeErr) {
+        console.warn('supabase.functions.invoke fallback to fetch:', invokeErr)
+        const url = (supabase as any)?.supabaseUrl || 'https://newhtivqunqtjswkxwhp.supabase.co'
+        const res = await fetch(`${url}/functions/v1/send-reminders`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            testUserId: user.value.id,
+            delaySeconds
+          })
+        })
+        const data = await res.json()
+        sentCount = data.sent ?? 0
+      }
 
-      const data = await res.json()
-      if (data.sent > 0) {
+      if (sentCount > 0) {
         if (delaySeconds === 0) {
           toast.add({
             title: 'Notifica push inviata dal server!',
@@ -399,12 +435,14 @@ export function useNotifications() {
 
   function triggerServerReminders() {
     if (!import.meta.client) return
-    const url = (supabase as any)?.supabaseUrl || 'https://newhtivqunqtjswkxwhp.supabase.co'
-    fetch(`${url}/functions/v1/send-reminders`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    }).catch((err) => {
-      console.warn('Could not trigger server reminders:', err)
+    supabase.functions.invoke('send-reminders').catch(() => {
+      const url = (supabase as any)?.supabaseUrl || 'https://newhtivqunqtjswkxwhp.supabase.co'
+      fetch(`${url}/functions/v1/send-reminders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      }).catch((err) => {
+        console.warn('Could not trigger server reminders:', err)
+      })
     })
   }
 

@@ -12,7 +12,17 @@ import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import webpush from 'https://esm.sh/web-push@3.6.7'
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, GET, OPTIONS'
+}
+
 serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
+
   const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
   const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
   const vapidPublicKey = Deno.env.get('VAPID_PUBLIC_KEY') ?? ''
@@ -22,7 +32,7 @@ serve(async (req) => {
   if (!vapidPublicKey || !vapidPrivateKey) {
     return new Response(JSON.stringify({ error: 'VAPID keys not configured in Edge Function environment' }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     })
   }
 
@@ -48,7 +58,7 @@ serve(async (req) => {
 
       if (subsError || !subscriptions || subscriptions.length === 0) {
         return new Response(JSON.stringify({ message: 'No subscriptions found for user', sent: 0 }), {
-          headers: { 'Content-Type': 'application/json' }
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         })
       }
 
@@ -80,7 +90,6 @@ serve(async (req) => {
             {
               TTL: 86400,
               urgency: 'high',
-              topic: 'test-push',
               headers: pushHeaders
             }
           )
@@ -94,7 +103,7 @@ serve(async (req) => {
       }
 
       return new Response(JSON.stringify({ message: 'Test push processed', sent: testSent }), {
-        headers: { 'Content-Type': 'application/json' }
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       })
     }
 
@@ -140,7 +149,7 @@ serve(async (req) => {
 
     if (eligibleTodos.length === 0) {
       return new Response(JSON.stringify({ message: 'No reminders due', processed: 0 }), {
-        headers: { 'Content-Type': 'application/json' }
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       })
     }
 
@@ -318,12 +327,12 @@ serve(async (req) => {
 
     return new Response(
       JSON.stringify({ message: 'Reminders processed', processed: eligibleTodos.length, sent: sentCount }),
-      { headers: { 'Content-Type': 'application/json' } }
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   } catch (err: any) {
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     })
   }
 })

@@ -24,11 +24,13 @@ if (!self.__shareTodoPushHandlerRegistered) {
     const title = data.title || 'ShareToDo — Promemoria'
     const body = data.body || 'Hai un\'attività in scadenza'
     const url = (data.data && data.data.url) || data.url || '/'
+    const icon = data.icon || '/icons/icon-192.png'
     const tag = data.tag || `todo-${Date.now()}`
 
     const options = {
       body,
-      icon: data.icon || '/icons/icon-192.png',
+      icon,
+      badge: icon,
       tag,
       data: {
         url,
