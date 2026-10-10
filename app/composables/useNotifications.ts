@@ -192,19 +192,71 @@ export function useNotifications() {
     // Ensure push subscription is synchronized with backend
     await subscribePush()
 
-    await showNotification('ShareToDo — Notifica di prova', {
-      body: 'Le notifiche sono configurate e funzionanti! 🔔',
+    // 1. Show immediate local feedback notification
+    await showNotification('ShareToDo — Notifica locale', {
+      body: 'Permessi attivi! Invio notifica push dal server in corso...',
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-192.png',
-      tag: 'test-notification',
+      tag: 'test-local-notification',
       data: { url: '/' }
     })
 
-    toast.add({
-      title: 'Notifica inviata',
-      description: 'Controlla il centro notifiche del tuo dispositivo.',
-      color: 'success'
-    })
+    // 2. Also trigger a real server push so user can test background delivery
+    await sendServerTestNotification()
+  }
+
+  async function sendServerTestNotification(): Promise<boolean> {
+    if (!import.meta.client) return false
+    refreshPermission()
+
+    if (permission.value !== 'granted') {
+      const granted = await requestPermission()
+      if (!granted) return false
+    }
+
+    await subscribePush()
+
+    if (!user.value) {
+      toast.add({
+        title: 'Accesso richiesto',
+        description: 'Effettua l\'accesso per ricevere notifiche push.',
+        color: 'warning'
+      })
+      return false
+    }
+
+    try {
+      const url = (supabase as any)?.supabaseUrl || 'https://newhtivqunqtjswkxwhp.supabase.co'
+      const res = await fetch(`${url}/functions/v1/send-reminders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ testUserId: user.value.id })
+      })
+
+      const data = await res.json()
+      if (data.sent > 0) {
+        toast.add({
+          title: 'Notifica push inviata dal server!',
+          description: 'Funziona anche ad app chiusa! Chiudi l\'app per provarla.',
+          color: 'success'
+        })
+        return true
+      } else {
+        toast.add({
+          title: 'Dispositivo in sincronizzazione',
+          description: 'Sottoscrizione push registrata. Se non arriva, riavvia l\'app.',
+          color: 'info'
+        })
+        return false
+      }
+    } catch (err: any) {
+      toast.add({
+        title: 'Errore invio push',
+        description: err.message || 'Impossibile inviare la notifica di prova.',
+        color: 'error'
+      })
+      return false
+    }
   }
 
   function triggerServerReminders() {
@@ -237,6 +289,8 @@ export function useNotifications() {
         // Otherwise calculate from due_at - reminder_minutes
         const dueTime = new Date(todo.due_at).getTime()
         targetTime = dueTime - (todo.reminder_minutes * 60 * 1000)
+      } else if (todo.due_at) {
+        targetTime = new Date(todo.due_at).getTime()
       }
 
       if (!targetTime) continue
@@ -309,6 +363,7 @@ export function useNotifications() {
     isSubscribing,
     requestPermission,
     sendTestNotification,
+    sendServerTestNotification,
     subscribePush,
     checkReminders
   }

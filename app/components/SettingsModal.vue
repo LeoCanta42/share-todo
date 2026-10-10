@@ -759,6 +759,9 @@ async function handleInstall() {
                   >
                     Invia notifica di prova
                   </UButton>
+                  <p class="w-full text-[11px] text-slate-400 dark:text-slate-500">
+                    Premi «Invia notifica di prova» e chiudi l'app per verificare la notifica push in background.
+                  </p>
                 </template>
                 <template v-else-if="notificationPermission === 'denied'">
                   <span class="inline-flex items-center gap-1.5 rounded-xl bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 dark:bg-red-950/50 dark:text-red-300">

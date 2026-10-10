@@ -1,6 +1,6 @@
 /**
  * Service Worker push notification & click handler.
- * Loaded via importScripts in workbox configuration.
+ * Loaded via importScripts in workbox configuration and fallback.
  */
 
 self.addEventListener('push', (event) => {
@@ -8,24 +8,44 @@ self.addEventListener('push', (event) => {
   try {
     data = event.data ? event.data.json() : {}
   } catch (err) {
-    data = {
-      title: 'ShareToDo — Promemoria',
-      body: event.data ? event.data.text() : 'Hai un\'attività in scadenza'
+    try {
+      data = {
+        title: 'ShareToDo — Promemoria',
+        body: event.data ? event.data.text() : 'Hai un\'attività in scadenza'
+      }
+    } catch {
+      data = { title: 'ShareToDo — Promemoria', body: 'Hai un\'attività in scadenza' }
     }
   }
 
   const title = data.title || 'ShareToDo — Promemoria'
+  const body = data.body || 'Hai un\'attività in scadenza'
+  const url = (data.data && data.data.url) || data.url || '/'
+  const tag = data.tag || 'share-todo-reminder'
+
   const options = {
-    body: data.body || 'Hai un\'attività in scadenza',
+    body,
     icon: data.icon || '/icons/icon-192.png',
     badge: data.badge || '/icons/icon-192.png',
     vibrate: [200, 100, 200],
-    data: data.data || { url: data.url || '/' },
-    tag: data.tag || 'share-todo-reminder',
-    renotify: true
+    tag,
+    renotify: true,
+    data: {
+      url,
+      ...(data.data || {})
+    }
   }
 
-  event.waitUntil(self.registration.showNotification(title, options))
+  event.waitUntil(
+    self.registration.showNotification(title, options).catch((err) => {
+      console.warn('showNotification retry with minimal options:', err)
+      return self.registration.showNotification(title, {
+        body,
+        icon: '/icons/icon-192.png',
+        data: { url }
+      })
+    })
+  )
 })
 
 self.addEventListener('notificationclick', (event) => {

@@ -31,6 +31,60 @@ serve(async (req) => {
   const supabase = createClient(supabaseUrl, serviceRoleKey)
 
   try {
+    const reqBody = await req.json().catch(() => ({}))
+    const testUserId = reqBody?.testUserId
+
+    if (testUserId) {
+      const { data: subscriptions, error: subsError } = await supabase
+        .from('push_subscriptions')
+        .select('id, endpoint, p256dh, auth, user_id')
+        .eq('user_id', testUserId)
+
+      if (subsError || !subscriptions || subscriptions.length === 0) {
+        return new Response(JSON.stringify({ message: 'No subscriptions found for user', sent: 0 }), {
+          headers: { 'Content-Type': 'application/json' }
+        })
+      }
+
+      const testPayload = JSON.stringify({
+        title: 'ShareToDo — Notifica di prova',
+        body: 'La notifica push dal server è arrivata con successo! Funziona anche ad app chiusa! 🔔',
+        url: '/',
+        tag: 'test-push-notification',
+        data: { url: '/' }
+      })
+
+      let testSent = 0
+      for (const sub of subscriptions) {
+        try {
+          await webpush.sendNotification(
+            {
+              endpoint: sub.endpoint,
+              keys: { p256dh: sub.p256dh, auth: sub.auth }
+            },
+            testPayload,
+            {
+              TTL: 86400,
+              urgency: 'high',
+              topic: 'test-push',
+              headers: { Urgency: 'high', Topic: 'test-push' }
+            }
+          )
+          testSent++
+        } catch (pushErr: any) {
+          if (pushErr.statusCode === 404 || pushErr.statusCode === 410) {
+            await supabase.from('push_subscriptions').delete().eq('id', sub.id)
+          } else {
+            console.error('Error sending test push:', pushErr)
+          }
+        }
+      }
+
+      return new Response(JSON.stringify({ message: 'Test push processed', sent: testSent }), {
+        headers: { 'Content-Type': 'application/json' }
+      })
+    }
+
     const now = new Date()
     const nowMs = now.getTime()
     const twentyFourHoursAgoMs = nowMs - 24 * 60 * 60 * 1000
@@ -57,6 +111,9 @@ serve(async (req) => {
       } else if (todo.due_at && todo.reminder_minutes !== null) {
         const dueTime = new Date(todo.due_at).getTime()
         targetTime = dueTime - (todo.reminder_minutes * 60 * 1000)
+      } else if (todo.due_at) {
+        // If due date is set but no relative minutes chosen, default reminder is at due date
+        targetTime = new Date(todo.due_at).getTime()
       }
 
       if (!targetTime || isNaN(targetTime)) continue

@@ -53,6 +53,13 @@ const reminderMinutes = ref<number | null>(0)
 const reminderDate = ref('')
 const reminderTime = ref('09:00')
 
+watch(dueDate, (val) => {
+  if (val && reminderMode.value === 'none') {
+    reminderMode.value = 'relative'
+    reminderMinutes.value = 0
+  }
+})
+
 const selected = computed(() => flat.value.find(node => node.group.id === selectedGroupId.value) ?? null)
 const selectedMeta = computed(() => groupMetaOf(selected.value?.group, 'Generale'))
 
