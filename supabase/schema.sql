@@ -1252,6 +1252,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.todo_shares TO anon, authenticate
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.groups      TO authenticated;
 -- profiles: read-only, and RLS restricts it to your own row (or everything, for admins).
 GRANT SELECT ON public.profiles TO authenticated;
+-- push_subscriptions: users manage own subscriptions; edge functions need service_role access.
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.push_subscriptions TO authenticated, service_role;
 
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated;
 

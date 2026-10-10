@@ -17,7 +17,7 @@ export function useNotifications() {
   const config = useRuntimeConfig()
   const supabase = useSupabaseClient<Database>()
   const { user } = useAuth()
-  const { todos, markReminderSent } = useTodos()
+  const { todos } = useTodos()
 
   const permission = useState<'default' | 'granted' | 'denied' | 'unsupported'>('notifications-permission', () => 'default')
   const isSubscribing = ref(false)
@@ -83,22 +83,39 @@ export function useNotifications() {
     isSubscribing.value = true
     try {
       const reg = await Promise.race([
-        navigator.serviceWorker.getRegistration(),
-        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 1000))
+        navigator.serviceWorker.ready,
+        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 4000))
       ])
-      if (!reg || !('pushManager' in reg)) return
+      if (!reg || !('pushManager' in reg)) {
+        console.warn('Service worker or pushManager is not ready')
+        return
+      }
 
       let sub = await reg.pushManager.getSubscription()
       if (!sub) {
-        sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(vapidKey)
-        })
+        try {
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(vapidKey)
+          })
+        } catch (subErr) {
+          console.warn('Push subscription failed, trying unregister and re-subscribe:', subErr)
+          const existing = await reg.pushManager.getSubscription()
+          if (existing) {
+            await existing.unsubscribe()
+          }
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(vapidKey)
+          })
+        }
       }
+
+      if (!sub) return
 
       const json = sub.toJSON()
       if (json.endpoint && json.keys?.p256dh && json.keys?.auth) {
-        await supabase.from('push_subscriptions').upsert({
+        const { error } = await supabase.from('push_subscriptions').upsert({
           user_id: user.value.id,
           endpoint: json.endpoint,
           p256dh: json.keys.p256dh,
@@ -106,6 +123,10 @@ export function useNotifications() {
           user_agent: navigator.userAgent,
           last_seen_at: new Date().toISOString()
         }, { onConflict: 'endpoint' })
+
+        if (error) {
+          console.error('Error saving push subscription to Supabase:', error)
+        }
       }
     } catch (err: unknown) {
       console.warn('Could not register push subscription:', err)
@@ -122,8 +143,8 @@ export function useNotifications() {
     if ('serviceWorker' in navigator) {
       try {
         const reg = await Promise.race([
-          navigator.serviceWorker.getRegistration(),
-          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 400))
+          navigator.serviceWorker.ready,
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 500))
         ])
         if (reg?.active && 'showNotification' in reg) {
           await reg.showNotification(title, options)
@@ -168,6 +189,9 @@ export function useNotifications() {
       if (!granted) return
     }
 
+    // Ensure push subscription is synchronized with backend
+    await subscribePush()
+
     await showNotification('ShareToDo — Notifica di prova', {
       body: 'Le notifiche sono configurate e funzionanti! 🔔',
       icon: '/icons/icon-192.png',
@@ -180,6 +204,17 @@ export function useNotifications() {
       title: 'Notifica inviata',
       description: 'Controlla il centro notifiche del tuo dispositivo.',
       color: 'success'
+    })
+  }
+
+  function triggerServerReminders() {
+    if (!import.meta.client) return
+    const url = (supabase as any)?.supabaseUrl || 'https://newhtivqunqtjswkxwhp.supabase.co'
+    fetch(`${url}/functions/v1/send-reminders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    }).catch((err) => {
+      console.warn('Could not trigger server reminders:', err)
     })
   }
 
@@ -210,7 +245,8 @@ export function useNotifications() {
       if (now >= targetTime && now - targetTime < 30 * 60 * 1000) {
         notifiedIds.value.push(todo.id)
         const dueText = todo.due_at ? dueLabel(todo.due_at, todo.due_all_day) : ''
-        const body = dueText ? `Scadenza: ${dueText}` : 'Promemoria attività'
+        const groupPrefix = todo.group_name && todo.group_name !== 'Generale' ? `[${todo.group_name}] ` : ''
+        const body = dueText ? `${groupPrefix}Scadenza: ${dueText}` : `${groupPrefix}Promemoria attività`
 
         showNotification(`Promemoria: ${todo.title}`, {
           body,
@@ -220,10 +256,22 @@ export function useNotifications() {
           data: { url: `/?todo=${todo.id}`, todoId: todo.id }
         })
 
-        markReminderSent(todo.id)
+        // Notify server so all other users subscribed to this group receive the push
+        triggerServerReminders()
       }
     }
   }
+
+  // Reactively register or renew push subscription as soon as user & permission are ready
+  watch(
+    [() => user.value?.id, permission],
+    ([userId, perm]) => {
+      if (userId && perm === 'granted') {
+        subscribePush()
+      }
+    },
+    { immediate: true }
+  )
 
   let timer: ReturnType<typeof setInterval> | null = null
 
@@ -242,6 +290,9 @@ export function useNotifications() {
       if (document.visibilityState === 'visible') {
         refreshPermission()
         checkReminders()
+        if (user.value && permission.value === 'granted') {
+          subscribePush()
+        }
       }
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
