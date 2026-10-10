@@ -78,6 +78,12 @@ function formatPushDelay(ms?: number | null): string {
   return `${Math.round(ms / 60_000)} min di ritardo`
 }
 
+/**
+ * A push held for half a minute or more is the OS queueing it (Doze / app
+ * standby), not a slow server: the wire format is identical for every device.
+ */
+const hasDelayedReceipts = computed(() => pushReceipts.value.some(receipt => (receipt.lateByMs ?? 0) > 30_000))
+
 async function handleLogout() {
   emit('update:open', false)
   await logout()
@@ -882,6 +888,9 @@ async function handleInstall() {
                         </ul>
                         <p v-else class="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
                           Nessuna ricezione registrata su questo dispositivo.
+                        </p>
+                        <p v-if="hasDelayedReceipts" class="mt-2 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
+                          Una notifica è arrivata con oltre 30 secondi di ritardo: il telefono ha trattenuto la consegna (Doze / risparmio energetico). Su Android metti Chrome su «Senza restrizioni» — Impostazioni → App → Chrome → Batteria — e non rimuovere l'app dalle app recenti.
                         </p>
                       </div>
 
