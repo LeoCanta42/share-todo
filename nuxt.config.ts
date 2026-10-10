@@ -56,7 +56,7 @@ export default defineNuxtConfig({
 
   runtimeConfig: {
     public: {
-      vapidPublicKey: process.env.NUXT_PUBLIC_VAPID_PUBLIC_KEY || 'BM9EmQ1uDFTdn6LLHGlgPLyRDZt6pkpWv38o4xjk3tpnBl7f790uhITipDreOXFEVhHqn_d12E-0gOHZDlXneVc'
+      vapidPublicKey: process.env.NUXT_PUBLIC_VAPID_PUBLIC_KEY || ''
     }
   },
 
@@ -151,7 +151,6 @@ export default defineNuxtConfig({
       ]
     },
     workbox: {
-      importScripts: ['/push-handler.js'],
       globPatterns: ['**/*.{js,css,ico,png,svg,woff2}'],
       /**
        * Both folders below match the pattern above but must not be precached:

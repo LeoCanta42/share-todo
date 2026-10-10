@@ -28,7 +28,7 @@ const { tree, flat, groups, byId, loadGroups, createGroup, renameGroup, setGroup
 const { canInstall, install, needRefresh, updateApp, isIos, offlineReady, isInstalled, manualInstallHint } = usePwa()
 const { changePassword, logout, loading: authLoading } = useAuth()
 const { userEmail } = useCurrentUser()
-const { permission: notificationPermission, requestPermission: requestNotificationPermission, sendTestNotification } = useNotifications()
+const { permission: notificationPermission, requestPermission: requestNotificationPermission, sendTestNotification, resubscribePush, isSubscribing: isResubscribingPush } = useNotifications()
 const { ask } = useConfirm()
 const toast = useToast()
 
@@ -768,6 +768,17 @@ async function handleInstall() {
                     @click="sendTestNotification(10)"
                   >
                     Test ad app chiusa (tra 10s)
+                  </UButton>
+                  <UButton
+                    color="neutral"
+                    variant="outline"
+                    size="sm"
+                    icon="i-lucide-refresh-cw"
+                    :loading="isResubscribingPush"
+                    class="rounded-xl font-medium"
+                    @click="resubscribePush"
+                  >
+                    Reimposta e risincronizza
                   </UButton>
                   <p class="w-full text-[11px] text-slate-400 dark:text-slate-500">
                     Premi «Test ad app chiusa», poi chiudi l'app o blocca lo schermo: dopo 10 secondi riceverai la notifica push dal server.

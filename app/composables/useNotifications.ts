@@ -2,8 +2,9 @@ import type { Database } from '~/types/database.types'
 import { dueLabel } from '~/utils/date'
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const cleanStr = (base64String || '').trim()
+  const padding = '='.repeat((4 - (cleanStr.length % 4)) % 4)
+  const base64 = (cleanStr + padding).replace(/-/g, '+').replace(/_/g, '/')
   const rawData = window.atob(base64)
   const outputArray = new Uint8Array(rawData.length)
   for (let i = 0; i < rawData.length; ++i) {
@@ -77,8 +78,11 @@ export function useNotifications() {
 
   async function subscribePush() {
     if (!import.meta.client || !('serviceWorker' in navigator) || !user.value) return
-    const vapidKey = config.public.vapidPublicKey || 'BM9EmQ1uDFTdn6LLHGlgPLyRDZt6pkpWv38o4xjk3tpnBl7f790uhITipDreOXFEVhHqn_d12E-0gOHZDlXneVc'
-    if (!vapidKey) return
+    const vapidKey = (config.public.vapidPublicKey || '').trim()
+    if (!vapidKey) {
+      console.warn('[useNotifications] VAPID public key not set in NUXT_PUBLIC_VAPID_PUBLIC_KEY')
+      return
+    }
 
     isSubscribing.value = true
     try {
@@ -168,6 +172,88 @@ export function useNotifications() {
       }
     } catch (err: unknown) {
       console.warn('Could not register push subscription:', err)
+    } finally {
+      isSubscribing.value = false
+    }
+  }
+
+  async function resubscribePush(): Promise<boolean> {
+    if (!import.meta.client || !('serviceWorker' in navigator) || !user.value) {
+      toast.add({
+        title: 'Non supportato',
+        description: 'Impossibile configurare le notifiche push in questo browser.',
+        color: 'warning'
+      })
+      return false
+    }
+
+    const vapidKey = (config.public.vapidPublicKey || '').trim()
+    if (!vapidKey) {
+      toast.add({
+        title: 'Chiave VAPID non trovata',
+        description: 'La chiave pubblica VAPID non è configurata nell\'ambiente.',
+        color: 'error'
+      })
+      return false
+    }
+
+    isSubscribing.value = true
+    try {
+      let reg = await navigator.serviceWorker.getRegistration()
+      if (!reg?.active) {
+        reg = await navigator.serviceWorker.ready
+      }
+      if (!reg || !('pushManager' in reg)) {
+        throw new Error('PushManager non disponibile nel service worker.')
+      }
+
+      await reg.update().catch(() => {})
+
+      // Force unsubscribe stale browser subscription
+      const existing = await reg.pushManager.getSubscription()
+      if (existing) {
+        await existing.unsubscribe().catch(() => {})
+      }
+
+      // Clear any existing subscriptions for this user in Supabase
+      await supabase.from('push_subscriptions').delete().eq('user_id', user.value.id).catch(() => {})
+
+      // Re-subscribe cleanly with current key
+      const newSub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidKey)
+      })
+
+      const json = newSub.toJSON()
+      if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) {
+        throw new Error('Dati di sottoscrizione incompleti dal browser.')
+      }
+
+      const { error } = await supabase.from('push_subscriptions').upsert({
+        user_id: user.value.id,
+        endpoint: json.endpoint,
+        p256dh: json.keys.p256dh,
+        auth: json.keys.auth,
+        user_agent: navigator.userAgent,
+        last_seen_at: new Date().toISOString()
+      }, { onConflict: 'endpoint' })
+
+      if (error) throw error
+
+      toast.add({
+        title: 'Notifiche sincronizzate!',
+        description: 'Registrazione push rinnovata con successo sul server.',
+        color: 'success'
+      })
+      return true
+    } catch (err: any) {
+      console.error('[resubscribePush] error:', err)
+      toast.add({
+        title: 'Errore sincronizzazione',
+        description: err.message || 'Impossibile rinnovare la registrazione push.',
+        color: 'error'
+      })
+      return false
     } finally {
       isSubscribing.value = false
     }
@@ -417,6 +503,7 @@ export function useNotifications() {
     sendTestNotification,
     sendServerTestNotification,
     subscribePush,
+    resubscribePush,
     checkReminders
   }
 }
