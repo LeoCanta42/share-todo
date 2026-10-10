@@ -13,6 +13,19 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   return outputArray
 }
 
+/**
+ * What the `send-reminders` function reports back about a test push: how many
+ * devices the account has registered, how many pushes the push services took,
+ * which devices were refused and why.
+ */
+type PushDeliverySummary = {
+  message?: string
+  scheduled?: boolean
+  subscriptions?: number
+  sent?: number
+  failures?: Array<{ status: number | null, reason: string }>
+}
+
 export function useNotifications() {
   const toast = useToast()
   const config = useRuntimeConfig()
@@ -349,6 +362,67 @@ export function useNotifications() {
     await sendServerTestNotification(delaySeconds)
   }
 
+  /**
+   * Calls the reminders function, falling back to a plain fetch when the Supabase
+   * client cannot invoke it. The function is deployed with JWT verification off
+   * (the pg_cron job calls it with no session), so both paths reach it.
+   */
+  async function invokeReminders(payload: Record<string, unknown> = {}): Promise<PushDeliverySummary | null> {
+    try {
+      const { data, error } = await supabase.functions.invoke('send-reminders', { body: payload })
+      if (error) throw error
+      return (data ?? null) as PushDeliverySummary | null
+    } catch (invokeErr) {
+      console.warn('supabase.functions.invoke failed, retrying with fetch:', invokeErr)
+
+      const client = supabase as unknown as { supabaseUrl?: string, supabaseKey?: string }
+      const url = client.supabaseUrl || 'https://newhtivqunqtjswkxwhp.supabase.co'
+
+      let accessToken: string | undefined
+      try {
+        const { data } = await supabase.auth.getSession()
+        accessToken = data.session?.access_token
+      } catch {
+        // Anonymous call: the function only needs the payload.
+      }
+
+      const res = await fetch(`${url}/functions/v1/send-reminders`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(client.supabaseKey ? { apikey: client.supabaseKey } : {}),
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {})
+        },
+        body: JSON.stringify(payload)
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return (await res.json()) as PushDeliverySummary
+    }
+  }
+
+  /** Turns the server's delivery report into one sentence for the user. */
+  function describePushSummary(summary: PushDeliverySummary | null): string {
+    if (!summary) return 'Il server non ha risposto come previsto.'
+
+    const devices = summary.subscriptions ?? 0
+    const delivered = summary.sent ?? 0
+    const failure = summary.failures?.[0]
+
+    if (summary.scheduled) {
+      return `Il server invierà la notifica a ${devices} ${devices === 1 ? 'dispositivo' : 'dispositivi'} tra pochi secondi.`
+    }
+    if (delivered > 0) {
+      return `Accettata dal servizio push per ${delivered} ${delivered === 1 ? 'dispositivo' : 'dispositivi'}.`
+    }
+    if (devices === 0) {
+      return 'Nessun dispositivo registrato per questo account: apri l\'app e riprova.'
+    }
+    if (failure) {
+      return `Il servizio push ha rifiutato l'invio (${failure.status ?? 'errore'}): ${failure.reason.slice(0, 160)}`
+    }
+    return summary.message || 'Invio non riuscito.'
+  }
+
   async function sendServerTestNotification(delaySeconds = 0): Promise<boolean> {
     if (!import.meta.client) return false
     refreshPermission()
@@ -357,8 +431,6 @@ export function useNotifications() {
       const granted = await requestPermission()
       if (!granted) return false
     }
-
-    await subscribePush()
 
     if (!user.value) {
       toast.add({
@@ -369,80 +441,54 @@ export function useNotifications() {
       return false
     }
 
+    // Register this device before asking the server to push to it.
+    await subscribePush()
+
+    let summary: PushDeliverySummary | null = null
     try {
-      if (delaySeconds > 0) {
-        toast.add({
-          title: `Invio programmato tra ${delaySeconds} secondi!`,
-          description: 'Chiudi l\'app adesso o blocca lo schermo per testare la notifica ad app chiusa 🔔',
-          color: 'info'
-        })
-      }
-
-      let sentCount = 0
-      try {
-        const { data, error } = await supabase.functions.invoke('send-reminders', {
-          body: {
-            testUserId: user.value.id,
-            delaySeconds
-          }
-        })
-        if (!error && data) {
-          sentCount = data.sent ?? 0
-        } else if (error) {
-          throw error
-        }
-      } catch (invokeErr) {
-        console.warn('supabase.functions.invoke fallback to fetch:', invokeErr)
-        const url = (supabase as any)?.supabaseUrl || 'https://newhtivqunqtjswkxwhp.supabase.co'
-        const res = await fetch(`${url}/functions/v1/send-reminders`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            testUserId: user.value.id,
-            delaySeconds
-          })
-        })
-        const data = await res.json()
-        sentCount = data.sent ?? 0
-      }
-
-      if (sentCount > 0) {
-        if (delaySeconds === 0) {
-          toast.add({
-            title: 'Notifica push inviata dal server!',
-            description: 'Notifica inviata con successo!',
-            color: 'success'
-          })
-        }
-        return true
-      } else {
-        toast.add({
-          title: 'Dispositivo in sincronizzazione',
-          description: 'Sottoscrizione push registrata. Se non arriva, riavvia l\'app.',
-          color: 'info'
-        })
-        return false
-      }
+      summary = await invokeReminders({ testUserId: user.value.id, delaySeconds })
     } catch (err: any) {
       toast.add({
         title: 'Errore invio push',
-        description: err.message || 'Impossibile inviare la notifica di prova.',
+        description: err?.message || 'Impossibile contattare la funzione di invio.',
         color: 'error'
       })
       return false
     }
+
+    // The delayed test is scheduled server-side and answers at once, so the app
+    // can be closed the moment this confirmation appears.
+    if (summary?.scheduled) {
+      const devices = summary.subscriptions ?? 0
+      toast.add({
+        title: `Test programmato tra ${delaySeconds} secondi`,
+        description: `Ora puoi chiudere l'app: il server invierà la notifica a ${devices} ${devices === 1 ? 'dispositivo' : 'dispositivi'}.`,
+        color: 'success'
+      })
+      return true
+    }
+
+    if ((summary?.sent ?? 0) > 0) {
+      toast.add({
+        title: 'Notifica push inviata dal server!',
+        description: describePushSummary(summary),
+        color: 'success'
+      })
+      return true
+    }
+
+    toast.add({
+      title: delaySeconds > 0 ? 'Test non programmato' : 'Nessuna notifica inviata',
+      description: describePushSummary(summary),
+      color: 'warning'
+    })
+    return false
   }
 
   function triggerServerReminders() {
     if (!import.meta.client) return
-    supabase.functions.invoke('send-reminders').catch(() => {
-      const url = (supabase as any)?.supabaseUrl || 'https://newhtivqunqtjswkxwhp.supabase.co'
-      fetch(`${url}/functions/v1/send-reminders`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      }).catch((err) => {
-        console.warn('Could not trigger server reminders:', err)
-      })
+    invokeReminders().catch((err) => {
+      console.warn('Could not trigger server reminders:', err)
     })
   }
 

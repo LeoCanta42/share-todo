@@ -781,10 +781,13 @@ async function handleInstall() {
                     Reimposta e risincronizza
                   </UButton>
                   <p class="w-full text-[11px] text-slate-400 dark:text-slate-500">
-                    Premi «Test ad app chiusa», poi chiudi l'app o blocca lo schermo: dopo 10 secondi riceverai la notifica push dal server.
+                    Premi «Test ad app chiusa» e attendi la conferma: dopo 10 secondi è il server a inviare la notifica push, quindi deve arrivare anche con l'app chiusa.
                   </p>
                   <p v-if="isIos" class="w-full text-[11px] text-amber-600 dark:text-amber-400">
                     Nota iOS: su iPhone/iPad le notifiche ad app chiusa funzionano solo se l'app è stata aggiunta alla Schermata Home (Condividi → Aggiungi a schermata Home).
+                  </p>
+                  <p v-else class="w-full text-[11px] text-slate-400 dark:text-slate-500">
+                    Nota Android: le notifiche arrivano finché il browser resta in esecuzione; se Chrome è stato terminato del tutto, la notifica viene consegnata appena lo riapri.
                   </p>
                 </template>
                 <template v-else-if="notificationPermission === 'denied'">
