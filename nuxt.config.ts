@@ -210,27 +210,17 @@ export default defineNuxtConfig({
     includeAssets: ['favicon.ico', 'favicon.svg', 'robots.txt', 'icons/*.png']
   },
 
-  nitro: {
-    hooks: {
-      'compiled': async () => {
+  hooks: {
+    'nitro:init': (nitro) => {
+      nitro.hooks.hook('compiled', async () => {
         try {
           const { patchServiceWorkerFiles } = await import('./scripts/patch-sw.mjs')
           patchServiceWorkerFiles()
         } catch (err) {
           console.warn('[patch-sw] Hook warning:', err)
         }
-      }
-    }
-  },
-
-  hooks: {
-    'close': async () => {
-      try {
-        const { patchServiceWorkerFiles } = await import('./scripts/patch-sw.mjs')
-        patchServiceWorkerFiles()
-      } catch (err) {
-        console.warn('[patch-sw] Hook warning:', err)
-      }
+      })
     }
   }
 })
+

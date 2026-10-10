@@ -82,6 +82,7 @@ self.addEventListener('notificationclick', (event) => {
 
 export function patchServiceWorkerFiles() {
   const possiblePaths = [
+    path.join(rootDir, '.vercel', 'output', 'static', 'sw.js'),
     path.join(rootDir, '.output', 'public', 'sw.js'),
     path.join(rootDir, 'dist', 'sw.js')
   ]
