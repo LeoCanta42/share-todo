@@ -77,21 +77,49 @@ export function useNotifications() {
 
   async function subscribePush() {
     if (!import.meta.client || !('serviceWorker' in navigator) || !user.value) return
-    const vapidKey = config.public.vapidPublicKey
+    const vapidKey = config.public.vapidPublicKey || 'BM9EmQ1uDFTdn6LLHGlgPLyRDZt6pkpWv38o4xjk3tpnBl7f790uhITipDreOXFEVhHqn_d12E-0gOHZDlXneVc'
     if (!vapidKey) return
 
     isSubscribing.value = true
     try {
-      const reg = await Promise.race([
-        navigator.serviceWorker.ready,
-        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 4000))
-      ])
+      // 1. Get registration (immediate check, then ready)
+      let reg = await navigator.serviceWorker.getRegistration()
+      if (!reg?.active) {
+        reg = await Promise.race([
+          navigator.serviceWorker.ready,
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 5000))
+        ])
+      }
       if (!reg || !('pushManager' in reg)) {
         console.warn('Service worker or pushManager is not ready')
         return
       }
 
+      // Proactively trigger service worker update so mobile devices install the latest sw.js immediately
+      reg.update().catch(() => {})
+
       let sub = await reg.pushManager.getSubscription()
+
+      // Validate existing subscription key against target VAPID key
+      if (sub && sub.options?.applicationServerKey) {
+        const currentKey = new Uint8Array(sub.options.applicationServerKey)
+        const targetKey = urlBase64ToUint8Array(vapidKey)
+        let keyMatches = currentKey.length === targetKey.length
+        if (keyMatches) {
+          for (let i = 0; i < currentKey.length; i++) {
+            if (currentKey[i] !== targetKey[i]) {
+              keyMatches = false
+              break
+            }
+          }
+        }
+        if (!keyMatches) {
+          console.info('[push] Renewing push subscription due to VAPID key mismatch')
+          await sub.unsubscribe().catch(() => {})
+          sub = null
+        }
+      }
+
       if (!sub) {
         try {
           sub = await reg.pushManager.subscribe({
@@ -102,7 +130,7 @@ export function useNotifications() {
           console.warn('Push subscription failed, trying unregister and re-subscribe:', subErr)
           const existing = await reg.pushManager.getSubscription()
           if (existing) {
-            await existing.unsubscribe()
+            await existing.unsubscribe().catch(() => {})
           }
           sub = await reg.pushManager.subscribe({
             userVisibleOnly: true,
@@ -126,6 +154,16 @@ export function useNotifications() {
 
         if (error) {
           console.error('Error saving push subscription to Supabase:', error)
+          // If upsert failed on RLS conflict from a prior session, remove old endpoint and insert clean
+          await supabase.from('push_subscriptions').delete().eq('endpoint', json.endpoint).catch(() => {})
+          await supabase.from('push_subscriptions').insert({
+            user_id: user.value.id,
+            endpoint: json.endpoint,
+            p256dh: json.keys.p256dh,
+            auth: json.keys.auth,
+            user_agent: navigator.userAgent,
+            last_seen_at: new Date().toISOString()
+          }).catch(() => {})
         }
       }
     } catch (err: unknown) {
@@ -171,7 +209,7 @@ export function useNotifications() {
     }
   }
 
-  async function sendTestNotification() {
+  async function sendTestNotification(delaySeconds = 0) {
     if (!import.meta.client) return
     refreshPermission()
 
@@ -192,20 +230,21 @@ export function useNotifications() {
     // Ensure push subscription is synchronized with backend
     await subscribePush()
 
-    // 1. Show immediate local feedback notification
-    await showNotification('ShareToDo — Notifica locale', {
-      body: 'Permessi attivi! Invio notifica push dal server in corso...',
-      icon: '/icons/icon-192.png',
-      badge: '/icons/icon-192.png',
-      tag: 'test-local-notification',
-      data: { url: '/' }
-    })
+    if (delaySeconds === 0) {
+      // 1. Show immediate local feedback notification
+      await showNotification('ShareToDo — Notifica locale', {
+        body: 'Permessi attivi! Invio notifica push dal server in corso...',
+        icon: '/icons/icon-192.png',
+        tag: `test-local-${Date.now()}`,
+        data: { url: '/' }
+      })
+    }
 
-    // 2. Also trigger a real server push so user can test background delivery
-    await sendServerTestNotification()
+    // 2. Trigger real server push
+    await sendServerTestNotification(delaySeconds)
   }
 
-  async function sendServerTestNotification(): Promise<boolean> {
+  async function sendServerTestNotification(delaySeconds = 0): Promise<boolean> {
     if (!import.meta.client) return false
     refreshPermission()
 
@@ -226,20 +265,33 @@ export function useNotifications() {
     }
 
     try {
+      if (delaySeconds > 0) {
+        toast.add({
+          title: `Invio programmato tra ${delaySeconds} secondi!`,
+          description: 'Chiudi l\'app adesso o blocca lo schermo per testare la notifica ad app chiusa 🔔',
+          color: 'info'
+        })
+      }
+
       const url = (supabase as any)?.supabaseUrl || 'https://newhtivqunqtjswkxwhp.supabase.co'
       const res = await fetch(`${url}/functions/v1/send-reminders`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testUserId: user.value.id })
+        body: JSON.stringify({
+          testUserId: user.value.id,
+          delaySeconds
+        })
       })
 
       const data = await res.json()
       if (data.sent > 0) {
-        toast.add({
-          title: 'Notifica push inviata dal server!',
-          description: 'Funziona anche ad app chiusa! Chiudi l\'app per provarla.',
-          color: 'success'
-        })
+        if (delaySeconds === 0) {
+          toast.add({
+            title: 'Notifica push inviata dal server!',
+            description: 'Notifica inviata con successo!',
+            color: 'success'
+          })
+        }
         return true
       } else {
         toast.add({

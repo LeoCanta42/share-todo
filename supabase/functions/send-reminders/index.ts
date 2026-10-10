@@ -33,8 +33,14 @@ serve(async (req) => {
   try {
     const reqBody = await req.json().catch(() => ({}))
     const testUserId = reqBody?.testUserId
+    const delaySeconds = Number(reqBody?.delaySeconds || 0)
 
     if (testUserId) {
+      if (delaySeconds > 0) {
+        const waitMs = Math.min(Math.max(delaySeconds, 1), 60) * 1000
+        await new Promise((resolve) => setTimeout(resolve, waitMs))
+      }
+
       const { data: subscriptions, error: subsError } = await supabase
         .from('push_subscriptions')
         .select('id, endpoint, p256dh, auth, user_id')
@@ -49,14 +55,22 @@ serve(async (req) => {
       const testPayload = JSON.stringify({
         title: 'ShareToDo — Notifica di prova',
         body: 'La notifica push dal server è arrivata con successo! Funziona anche ad app chiusa! 🔔',
+        icon: '/icons/icon-192.png',
         url: '/',
-        tag: 'test-push-notification',
+        tag: `test-push-${Date.now()}`,
         data: { url: '/' }
       })
 
       let testSent = 0
       for (const sub of subscriptions) {
         try {
+          const isApple = sub.endpoint.includes('push.apple.com') || sub.endpoint.includes('apple.com')
+          const pushHeaders: Record<string, string> = {}
+          if (isApple) {
+            pushHeaders['apns-push-type'] = 'alert'
+            pushHeaders['apns-priority'] = '10'
+          }
+
           await webpush.sendNotification(
             {
               endpoint: sub.endpoint,
@@ -67,15 +81,14 @@ serve(async (req) => {
               TTL: 86400,
               urgency: 'high',
               topic: 'test-push',
-              headers: { Urgency: 'high', Topic: 'test-push' }
+              headers: pushHeaders
             }
           )
           testSent++
         } catch (pushErr: any) {
+          console.error(`Error sending test push to ${sub.endpoint}:`, pushErr.statusCode, pushErr.body || pushErr.message)
           if (pushErr.statusCode === 404 || pushErr.statusCode === 410) {
             await supabase.from('push_subscriptions').delete().eq('id', sub.id)
-          } else {
-            console.error('Error sending test push:', pushErr)
           }
         }
       }
@@ -270,6 +283,13 @@ serve(async (req) => {
 
       for (const sub of subscriptions) {
         try {
+          const isApple = sub.endpoint.includes('push.apple.com') || sub.endpoint.includes('apple.com')
+          const pushHeaders: Record<string, string> = {}
+          if (isApple) {
+            pushHeaders['apns-push-type'] = 'alert'
+            pushHeaders['apns-priority'] = '10'
+          }
+
           await webpush.sendNotification(
             {
               endpoint: sub.endpoint,
@@ -282,20 +302,15 @@ serve(async (req) => {
             {
               TTL: 86400,
               urgency: 'high',
-              topic: `todo-${todo.id}`,
-              headers: {
-                Urgency: 'high',
-                Topic: `todo-${todo.id}`
-              }
+              topic: `todo-${todo.id}`.slice(0, 32),
+              headers: pushHeaders
             }
           )
           sentCount++
         } catch (pushErr: any) {
-          // If subscription is expired or gone (404/410), prune it
+          console.error(`Error sending push to endpoint: ${sub.endpoint}:`, pushErr.statusCode, pushErr.body || pushErr.message)
           if (pushErr.statusCode === 404 || pushErr.statusCode === 410) {
             await supabase.from('push_subscriptions').delete().eq('id', sub.id)
-          } else {
-            console.error('Error sending push to endpoint:', sub.endpoint, pushErr)
           }
         }
       }

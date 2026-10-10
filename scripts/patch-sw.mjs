@@ -11,52 +11,51 @@ const PUSH_HEADER = `/**
  * Injected at the top of the Service Worker to guarantee synchronous registration
  * so background push wakeups on mobile (Android/iOS) are never dropped by the browser.
  */
-self.addEventListener('push', (event) => {
-  let data = {}
-  try {
-    data = event.data ? event.data.json() : {}
-  } catch (err) {
+if (!self.__shareTodoPushHandlerRegistered) {
+  self.__shareTodoPushHandlerRegistered = true
+
+  self.addEventListener('push', (event) => {
+    let data = {}
     try {
-      data = {
-        title: 'ShareToDo — Promemoria',
-        body: event.data ? event.data.text() : 'Hai un\\'attività in scadenza'
+      data = event.data ? event.data.json() : {}
+    } catch (err) {
+      try {
+        data = {
+          title: 'ShareToDo — Promemoria',
+          body: event.data ? event.data.text() : 'Hai un\\'attività in scadenza'
+        }
+      } catch {
+        data = { title: 'ShareToDo — Promemoria', body: 'Hai un\\'attività in scadenza' }
       }
-    } catch {
-      data = { title: 'ShareToDo — Promemoria', body: 'Hai un\\'attività in scadenza' }
     }
-  }
 
-  const title = data.title || 'ShareToDo — Promemoria'
-  const body = data.body || 'Hai un\\'attività in scadenza'
-  const url = (data.data && data.data.url) || data.url || '/'
-  const tag = data.tag || 'share-todo-reminder'
+    const title = data.title || 'ShareToDo — Promemoria'
+    const body = data.body || 'Hai un\\'attività in scadenza'
+    const url = (data.data && data.data.url) || data.url || '/'
+    const tag = data.tag || \`todo-\${Date.now()}\`
 
-  const options = {
-    body,
-    icon: data.icon || '/icons/icon-192.png',
-    badge: data.badge || '/icons/icon-192.png',
-    vibrate: [200, 100, 200],
-    tag,
-    renotify: true,
-    data: {
-      url,
-      ...(data.data || {})
+    const options = {
+      body,
+      icon: data.icon || '/icons/icon-192.png',
+      tag,
+      data: {
+        url,
+        ...(data.data || {})
+      }
     }
-  }
 
-  // Use event.waitUntil so the mobile OS keeps the worker alive until notification is displayed.
-  // Fallback without vibrate/badge in case strict mobile environments (e.g. iOS Safari) reject them.
-  event.waitUntil(
-    self.registration.showNotification(title, options).catch((err) => {
-      console.warn('showNotification retry with minimal options:', err)
-      return self.registration.showNotification(title, {
-        body,
-        icon: '/icons/icon-192.png',
-        data: { url }
+    // Use event.waitUntil so the mobile OS keeps the worker alive until notification is displayed.
+    // Fallback without icon/badge in case strict mobile environments (e.g. iOS Safari) reject them.
+    event.waitUntil(
+      self.registration.showNotification(title, options).catch((err) => {
+        console.warn('showNotification retry with minimal options:', err)
+        return self.registration.showNotification(title, {
+          body,
+          data: { url }
+        })
       })
-    })
-  )
-})
+    )
+  })
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
@@ -76,8 +75,8 @@ self.addEventListener('notificationclick', (event) => {
         return clients.openWindow(targetUrl)
       }
     })
-  )
-});
+  });
+}
 `
 
 export function patchServiceWorkerFiles() {

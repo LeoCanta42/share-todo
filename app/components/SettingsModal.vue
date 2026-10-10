@@ -755,12 +755,25 @@ async function handleInstall() {
                     size="sm"
                     icon="i-lucide-bell-ring"
                     class="rounded-xl font-medium"
-                    @click="sendTestNotification"
+                    @click="sendTestNotification(0)"
                   >
-                    Invia notifica di prova
+                    Notifica immediata
+                  </UButton>
+                  <UButton
+                    color="primary"
+                    variant="soft"
+                    size="sm"
+                    icon="i-lucide-timer"
+                    class="rounded-xl font-medium"
+                    @click="sendTestNotification(10)"
+                  >
+                    Test ad app chiusa (tra 10s)
                   </UButton>
                   <p class="w-full text-[11px] text-slate-400 dark:text-slate-500">
-                    Premi «Invia notifica di prova» e chiudi l'app per verificare la notifica push in background.
+                    Premi «Test ad app chiusa», poi chiudi l'app o blocca lo schermo: dopo 10 secondi riceverai la notifica push dal server.
+                  </p>
+                  <p v-if="isIos" class="w-full text-[11px] text-amber-600 dark:text-amber-400">
+                    Nota iOS: su iPhone/iPad le notifiche ad app chiusa funzionano solo se l'app è stata aggiunta alla Schermata Home (Condividi → Aggiungi a schermata Home).
                   </p>
                 </template>
                 <template v-else-if="notificationPermission === 'denied'">
