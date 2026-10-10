@@ -80,14 +80,17 @@ serve(async (req) => {
     const delaySeconds = Number(reqBody?.delaySeconds || 0)
 
     if (testUserId) {
-      const testPayload = JSON.stringify({
+      // `sentAt` is stamped per send so the device can report how late a push
+      // arrived: the service worker logs the difference between sending and
+      // receiving, which is what tells a notification the phone only surfaces on
+      // next launch apart from one that was delivered on time.
+      const testPush = {
         title: 'ShareToDo — Notifica di prova',
         body: 'La notifica push dal server è arrivata con successo! Funziona anche ad app chiusa! 🔔',
         icon: '/icons/icon-192.png',
         url: '/',
-        tag: `test-push-${Date.now()}`,
         data: { url: '/' }
-      })
+      }
 
       const loadTestSubscriptions = async () => {
         const { data, error } = await supabase
@@ -114,7 +117,11 @@ serve(async (req) => {
                 endpoint: sub.endpoint,
                 keys: { p256dh: sub.p256dh, auth: sub.auth }
               },
-              testPayload,
+              JSON.stringify({
+                ...testPush,
+                tag: `test-push-${Date.now()}-${sub.id}`,
+                sentAt: Date.now()
+              }),
               {
                 TTL: 86400,
                 urgency: 'high',
@@ -414,6 +421,7 @@ serve(async (req) => {
         body,
         url: `/?todo=${todo.id}`,
         tag: `todo-${todo.id}`,
+        sentAt: Date.now(),
         data: {
           url: `/?todo=${todo.id}`,
           todoId: todo.id

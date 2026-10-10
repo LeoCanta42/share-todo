@@ -28,9 +28,55 @@ const { tree, flat, groups, byId, loadGroups, createGroup, renameGroup, setGroup
 const { canInstall, install, needRefresh, updateApp, isIos, offlineReady, isInstalled, manualInstallHint } = usePwa()
 const { changePassword, logout, loading: authLoading } = useAuth()
 const { userEmail } = useCurrentUser()
-const { permission: notificationPermission, requestPermission: requestNotificationPermission, sendTestNotification, resubscribePush, isSubscribing: isResubscribingPush } = useNotifications()
+const { permission: notificationPermission, requestPermission: requestNotificationPermission, sendTestNotification, resubscribePush, isSubscribing: isResubscribingPush, loadRegisteredDevices, fetchPushLog } = useNotifications()
 const { ask } = useConfirm()
 const toast = useToast()
+
+/* ------------------------------------------------- notification diagnostics */
+
+const registeredDevices = ref<Awaited<ReturnType<typeof loadRegisteredDevices>>>([])
+const pushReceipts = ref<Awaited<ReturnType<typeof fetchPushLog>>>([])
+const isLoadingDiagnostics = ref(false)
+const diagnosticsLoaded = ref(false)
+
+async function refreshNotificationDiagnostics() {
+  isLoadingDiagnostics.value = true
+  try {
+    registeredDevices.value = await loadRegisteredDevices()
+    pushReceipts.value = await fetchPushLog()
+    diagnosticsLoaded.value = true
+  } finally {
+    isLoadingDiagnostics.value = false
+  }
+}
+
+async function onDiagnosticsToggle(event: Event) {
+  const target = event.target as HTMLDetailsElement | null
+  if (target?.open && !diagnosticsLoaded.value) {
+    await refreshNotificationDiagnostics()
+  }
+}
+
+function formatDiagnosticTime(value?: string | number | null): string {
+  if (value === null || value === undefined || value === '') return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleString('it-IT', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  })
+}
+
+/** "in tempo" when the push landed at once, otherwise how late it actually was. */
+function formatPushDelay(ms?: number | null): string {
+  if (ms === null || ms === undefined) return ''
+  if (ms < 2000) return 'in tempo'
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s di ritardo`
+  return `${Math.round(ms / 60_000)} min di ritardo`
+}
 
 async function handleLogout() {
   emit('update:open', false)
@@ -787,8 +833,71 @@ async function handleInstall() {
                     Nota iOS: su iPhone/iPad le notifiche ad app chiusa funzionano solo se l'app è stata aggiunta alla Schermata Home (Condividi → Aggiungi a schermata Home).
                   </p>
                   <p v-else class="w-full text-[11px] text-slate-400 dark:text-slate-500">
-                    Nota Android: le notifiche arrivano finché il browser resta in esecuzione; se Chrome è stato terminato del tutto, la notifica viene consegnata appena lo riapri.
+                    Nota Android: le notifiche arrivano finché il browser resta in esecuzione; se Chrome è stato terminato del tutto, la notifica viene consegnata appena lo riapri. Controlla anche che Chrome non sia limitato dalla batteria (Impostazioni Android → App → Chrome → Batteria → «Senza restrizioni»).
                   </p>
+                  <details
+                    class="mt-3 w-full rounded-xl border border-slate-200 dark:border-slate-700"
+                    @toggle="onDiagnosticsToggle"
+                  >
+                    <summary class="cursor-pointer px-3 py-2 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                      Diagnostica notifiche (dispositivi e ricezioni)
+                    </summary>
+                    <div class="space-y-3 px-3 pb-3">
+                      <div>
+                        <p class="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                          Dispositivi registrati sul server: {{ registeredDevices.length }}
+                        </p>
+                        <ul v-if="registeredDevices.length" class="mt-1 space-y-0.5">
+                          <li
+                            v-for="device in registeredDevices"
+                            :key="device.id"
+                            class="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400"
+                          >
+                            {{ device.platform }} · {{ device.endpointHost }} · registrato {{ formatDiagnosticTime(device.createdAt) }} · ultimo contatto {{ formatDiagnosticTime(device.lastSeenAt) }}
+                          </li>
+                        </ul>
+                        <p v-else class="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+                          Nessuno: il server non ha dispositivi da avvisare.
+                        </p>
+                      </div>
+
+                      <div>
+                        <p class="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                          Notifiche push ricevute su questo dispositivo
+                        </p>
+                        <ul v-if="pushReceipts.length" class="mt-1 space-y-0.5">
+                          <li
+                            v-for="(receipt, index) in pushReceipts"
+                            :key="`${receipt.at}-${index}`"
+                            class="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400"
+                          >
+                            {{ formatDiagnosticTime(receipt.at) }} — {{ receipt.title || 'notifica' }}
+                            <span v-if="receipt.shown === false" class="text-amber-600 dark:text-amber-400">
+                              (non mostrata: {{ receipt.error || 'errore sconosciuto' }})
+                            </span>
+                            <span v-else-if="formatPushDelay(receipt.lateByMs)" class="text-slate-400 dark:text-slate-500">
+                              ({{ formatPushDelay(receipt.lateByMs) }})
+                            </span>
+                          </li>
+                        </ul>
+                        <p v-else class="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+                          Nessuna ricezione registrata su questo dispositivo.
+                        </p>
+                      </div>
+
+                      <UButton
+                        color="neutral"
+                        variant="soft"
+                        size="xs"
+                        icon="i-lucide-refresh-cw"
+                        class="rounded-xl"
+                        :loading="isLoadingDiagnostics"
+                        @click="refreshNotificationDiagnostics"
+                      >
+                        Aggiorna diagnostica
+                      </UButton>
+                    </div>
+                  </details>
                 </template>
                 <template v-else-if="notificationPermission === 'denied'">
                   <span class="inline-flex items-center gap-1.5 rounded-xl bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 dark:bg-red-950/50 dark:text-red-300">

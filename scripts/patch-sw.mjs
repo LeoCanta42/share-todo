@@ -6,83 +6,37 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const rootDir = path.resolve(__dirname, '..')
 
-const PUSH_HEADER = `/* [SHARE-TODO-PUSH-START] */
+const PUSH_HANDLER_PATH = path.join(rootDir, 'public', 'push-handler.js')
+
+const PUSH_START = '/* [SHARE-TODO-PUSH-START] */'
+const PUSH_END = '/* [SHARE-TODO-PUSH-END] */'
+
 /**
- * ShareToDo Push Notification & Click Handler
- * Injected at the top of the Service Worker to guarantee synchronous registration
- * so background push wakeups on mobile (Android/iOS) are never dropped by the browser.
+ * Injects the push handler at the very top of the generated service worker.
+ *
+ * Workbox already pulls the same file in through `importScripts`, but that runs
+ * inside its module bootstrap; putting the handler first guarantees the `push`
+ * listener exists from the worker's first synchronous evaluation, so a push that
+ * wakes a closed app on mobile cannot be dropped for registering too late.
+ *
+ * The injected text is read from public/push-handler.js rather than duplicated
+ * here, so the two copies cannot drift apart.
  */
-if (!self.__shareTodoPushHandlerRegistered) {
-  self.__shareTodoPushHandlerRegistered = true;
-
-  self.addEventListener('push', (event) => {
-    let data = {};
-    try {
-      data = event.data ? event.data.json() : {};
-    } catch {
-      try {
-        data = {
-          title: 'ShareToDo — Promemoria',
-          body: event.data ? event.data.text() : 'Hai un\\'attività in scadenza'
-        };
-      } catch {
-        data = { title: 'ShareToDo — Promemoria', body: 'Hai un\\'attività in scadenza' };
-      }
-    }
-
-    const title = data.title || 'ShareToDo — Promemoria';
-    const body = data.body || 'Hai un\\'attività in scadenza';
-    const url = (data.data && data.data.url) || data.url || '/';
-    const icon = data.icon || '/icons/icon-192.png';
-    const tag = data.tag || ('todo-' + Date.now());
-
-    const options = {
-      body,
-      icon,
-      badge: icon,
-      tag,
-      data: {
-        url,
-        ...(data.data || {})
-      }
-    };
-
-    event.waitUntil(
-      self.registration.showNotification(title, options)
-        .catch((err) => {
-          console.warn('[sw] showNotification retry with minimal options:', err);
-          return self.registration.showNotification(title, { body, data: { url } });
-        })
-        .catch((err2) => {
-          console.error('[sw] showNotification fallback failed:', err2);
-        })
-    );
-  });
-
-  self.addEventListener('notificationclick', (event) => {
-    event.notification.close();
-    const targetUrl = (event.notification.data && event.notification.data.url) || '/';
-
-    event.waitUntil(
-      clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-        for (const client of clientList) {
-          if (client.url && 'focus' in client) {
-            if ('navigate' in client) {
-              client.navigate(targetUrl);
-            }
-            return client.focus();
-          }
-        }
-        if (clients.openWindow) {
-          return clients.openWindow(targetUrl);
-        }
-      })
-    );
-  });
-}
-/* [SHARE-TODO-PUSH-END] */`
-
 export function patchServiceWorkerFiles() {
+  if (!fs.existsSync(PUSH_HANDLER_PATH)) {
+    console.warn(`[patch-sw] ${PUSH_HANDLER_PATH} is missing: nothing injected`)
+    return 0
+  }
+
+  const handler = fs.readFileSync(PUSH_HANDLER_PATH, 'utf8').trim()
+
+  if (!handler.includes('__shareTodoPushHandlerRegistered')) {
+    console.warn(`[patch-sw] ${PUSH_HANDLER_PATH} does not look like the push handler: nothing injected`)
+    return 0
+  }
+
+  const pushHeader = `${PUSH_START}\n${handler}\n${PUSH_END}`
+
   const possiblePaths = [
     path.join(rootDir, '.vercel', 'output', 'static', 'sw.js'),
     path.join(rootDir, '.output', 'public', 'sw.js'),
@@ -100,8 +54,9 @@ export function patchServiceWorkerFiles() {
     const delimitedRegex = /\/\* \[SHARE-TODO-PUSH-START\] \*\/[\s\S]*?\/\* \[SHARE-TODO-PUSH-END\] \*\/\n?/
     if (delimitedRegex.test(content)) {
       content = content.replace(delimitedRegex, '')
-    } else if (content.includes('ShareToDo Push Notification & Click Handler')) {
-      // Legacy un-delimited injection removal
+    } else if (content.includes('__shareTodoPushHandlerRegistered')) {
+      // Legacy injection without the delimiters: everything ahead of workbox's own
+      // bootstrap is the stale handler.
       const splitIdx = content.indexOf('if(!self.define)')
       if (splitIdx !== -1) {
         content = content.slice(splitIdx)
@@ -113,7 +68,7 @@ export function patchServiceWorkerFiles() {
       }
     }
 
-    const newContent = `${PUSH_HEADER}\n${content.trimStart()}`
+    const newContent = `${pushHeader}\n${content.trimStart()}`
     fs.writeFileSync(swPath, newContent, 'utf8')
     console.log(`[patch-sw] Injected synchronous push handler into: ${swPath}`)
     patchedCount++

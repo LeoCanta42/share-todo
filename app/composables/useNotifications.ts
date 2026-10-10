@@ -32,6 +32,26 @@ type PushRegistration = {
   reason?: string
 }
 
+/** A device the server would push to for this account. */
+type RegisteredPushDevice = {
+  id: number
+  endpointHost: string
+  platform: string
+  createdAt: string | null
+  lastSeenAt: string | null
+}
+
+/** One push this device actually received, as recorded by the service worker. */
+type PushReceipt = {
+  at: string
+  title?: string
+  tag?: string
+  sentAt?: number | null
+  lateByMs?: number | null
+  shown?: boolean
+  error?: string | null
+}
+
 export function useNotifications() {
   const toast = useToast()
   const config = useRuntimeConfig()
@@ -577,6 +597,108 @@ export function useNotifications() {
     }
   }
 
+  /* ------------------------------------------------------------- diagnostics */
+
+  function endpointHost(endpoint: string): string {
+    try {
+      return new URL(endpoint).hostname
+    } catch {
+      return 'endpoint sconosciuto'
+    }
+  }
+
+  function describePlatform(userAgent: string | null): string {
+    const ua = userAgent || ''
+    const os =
+      /Android/i.test(ua) ? 'Android'
+        : /iPhone|iPad|iPod/i.test(ua) ? 'iOS'
+          : /Windows/i.test(ua) ? 'Windows'
+            : /Macintosh|Mac OS X/i.test(ua) ? 'macOS'
+              : /Linux/i.test(ua) ? 'Linux'
+                : 'SO sconosciuto'
+    const browser =
+      /Edg\//.test(ua) ? 'Edge'
+        : /OPR\//.test(ua) ? 'Opera'
+          : /Firefox\//.test(ua) ? 'Firefox'
+            : /Chrome\//.test(ua) ? 'Chrome'
+              : /Safari\//.test(ua) ? 'Safari'
+                : 'browser sconosciuto'
+    return `${os} · ${browser}`
+  }
+
+  /**
+   * The devices the server holds for this account. `push_subscriptions` is scoped
+   * to its owner by RLS, so this only ever reads the caller's own rows — and an
+   * empty list is the answer to "why does the server say there is nothing to
+   * push to?".
+   */
+  async function loadRegisteredDevices(): Promise<RegisteredPushDevice[]> {
+    if (!import.meta.client || !userId.value) return []
+
+    try {
+      const { data, error } = await supabase
+        .from('push_subscriptions')
+        .select('id, endpoint, user_agent, created_at, last_seen_at')
+        .eq('user_id', userId.value)
+        .order('created_at', { ascending: false })
+
+      if (error) {
+        console.warn('[useNotifications] could not read push_subscriptions:', error.message)
+        return []
+      }
+
+      return (data ?? []).map(row => ({
+        id: row.id,
+        endpointHost: endpointHost(row.endpoint),
+        platform: describePlatform(row.user_agent),
+        createdAt: row.created_at,
+        lastSeenAt: row.last_seen_at
+      }))
+    } catch (err: unknown) {
+      console.warn('[useNotifications] could not read push_subscriptions:', err)
+      return []
+    }
+  }
+
+  /**
+   * The receipt log the service worker keeps for this device. Empty means the
+   * worker has not received a push here at all (or is not running), which is what
+   * separates "the phone never got it" from "the phone got it and showed it late".
+   */
+  async function fetchPushLog(timeoutMs = 2000): Promise<PushReceipt[]> {
+    if (!import.meta.client || !('serviceWorker' in navigator)) return []
+
+    let worker: ServiceWorker | null = null
+    try {
+      const registration = await navigator.serviceWorker.getRegistration()
+      worker = registration?.active ?? navigator.serviceWorker.controller ?? null
+    } catch {
+      worker = null
+    }
+    if (!worker) return []
+
+    return new Promise<PushReceipt[]>((resolve) => {
+      const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+      let timer: ReturnType<typeof setTimeout> | undefined
+
+      const finish = (entries: PushReceipt[]) => {
+        if (timer) clearTimeout(timer)
+        navigator.serviceWorker.removeEventListener('message', onMessage)
+        resolve(entries)
+      }
+
+      const onMessage = (event: MessageEvent) => {
+        const data = event.data || {}
+        if (data.type !== 'sharetodo:push-log' || data.requestId !== requestId) return
+        finish(Array.isArray(data.entries) ? data.entries : [])
+      }
+
+      timer = setTimeout(() => finish([]), timeoutMs)
+      navigator.serviceWorker.addEventListener('message', onMessage)
+      worker!.postMessage({ type: 'sharetodo:push-log', requestId })
+    })
+  }
+
   // Reactively register or renew push subscription as soon as user & permission are ready
   watch(
     [() => userId.value, permission],
@@ -627,6 +749,8 @@ export function useNotifications() {
     sendServerTestNotification,
     subscribePush,
     resubscribePush,
-    checkReminders
+    checkReminders,
+    loadRegisteredDevices,
+    fetchPushLog
   }
 }
