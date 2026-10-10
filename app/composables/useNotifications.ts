@@ -26,11 +26,17 @@ type PushDeliverySummary = {
   failures?: Array<{ status: number | null, reason: string }>
 }
 
+/** Outcome of registering *this* device with the push service and the database. */
+type PushRegistration = {
+  ok: boolean
+  reason?: string
+}
+
 export function useNotifications() {
   const toast = useToast()
   const config = useRuntimeConfig()
   const supabase = useSupabaseClient<Database>()
-  const { user } = useAuth()
+  const { userId } = useCurrentUser()
   const { todos } = useTodos()
 
   const permission = useState<'default' | 'granted' | 'denied' | 'unsupported'>('notifications-permission', () => 'default')
@@ -89,12 +95,32 @@ export function useNotifications() {
     }
   }
 
-  async function subscribePush() {
-    if (!import.meta.client || !('serviceWorker' in navigator) || !user.value) return
+  /**
+   * Deletes one subscription row. PostgREST builders are only *thenable* (they
+   * implement `then`, not `catch`), so errors have to be handled with try/catch.
+   */
+  async function deleteSubscriptionByEndpoint(endpoint: string) {
+    try {
+      const { error } = await supabase.from('push_subscriptions').delete().eq('endpoint', endpoint)
+      if (error) console.warn('[useNotifications] could not delete stale subscription:', error.message)
+    } catch (err: unknown) {
+      console.warn('[useNotifications] could not delete stale subscription:', err)
+    }
+  }
+
+  async function subscribePush(): Promise<PushRegistration> {
+    if (!import.meta.client || !('serviceWorker' in navigator)) {
+      return { ok: false, reason: 'Questo browser non supporta i service worker.' }
+    }
+    if (!userId.value) {
+      return { ok: false, reason: 'Devi effettuare l\'accesso.' }
+    }
+
     const vapidKey = (config.public.vapidPublicKey || '').trim()
     if (!vapidKey) {
-      console.warn('[useNotifications] VAPID public key not set in NUXT_PUBLIC_VAPID_PUBLIC_KEY')
-      return
+      const reason = 'Chiave pubblica VAPID non configurata (NUXT_PUBLIC_VAPID_PUBLIC_KEY).'
+      console.warn(`[useNotifications] ${reason}`)
+      return { ok: false, reason }
     }
 
     isSubscribing.value = true
@@ -108,8 +134,7 @@ export function useNotifications() {
         ])
       }
       if (!reg || !('pushManager' in reg)) {
-        console.warn('Service worker or pushManager is not ready')
-        return
+        return { ok: false, reason: 'Service worker o PushManager non pronti: riapri l\'app e riprova.' }
       }
 
       // Proactively trigger service worker update so mobile devices install the latest sw.js immediately
@@ -156,42 +181,52 @@ export function useNotifications() {
         }
       }
 
-      if (!sub) return
+      if (!sub) {
+        return { ok: false, reason: 'Il browser non ha creato una sottoscrizione push.' }
+      }
 
       const json = sub.toJSON()
-      if (json.endpoint && json.keys?.p256dh && json.keys?.auth) {
-        const { error } = await supabase.from('push_subscriptions').upsert({
-          user_id: user.value.id,
-          endpoint: json.endpoint,
-          p256dh: json.keys.p256dh,
-          auth: json.keys.auth,
-          user_agent: navigator.userAgent,
-          last_seen_at: new Date().toISOString()
-        }, { onConflict: 'endpoint' })
-
-        if (error) {
-          console.error('Error saving push subscription to Supabase:', error)
-          // If upsert failed on RLS conflict from a prior session, remove old endpoint and insert clean
-          await supabase.from('push_subscriptions').delete().eq('endpoint', json.endpoint).catch(() => {})
-          await supabase.from('push_subscriptions').insert({
-            user_id: user.value.id,
-            endpoint: json.endpoint,
-            p256dh: json.keys.p256dh,
-            auth: json.keys.auth,
-            user_agent: navigator.userAgent,
-            last_seen_at: new Date().toISOString()
-          }).catch(() => {})
-        }
+      if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) {
+        return { ok: false, reason: 'Dati di sottoscrizione incompleti dal browser.' }
       }
+
+      // `user_id` is what the server filters on, so it has to be the auth user id
+      // (`sub` in the JWT claims) — `useSupabaseUser().id` does not exist.
+      const record = {
+        user_id: userId.value,
+        endpoint: json.endpoint,
+        p256dh: json.keys.p256dh,
+        auth: json.keys.auth,
+        user_agent: navigator.userAgent,
+        last_seen_at: new Date().toISOString()
+      }
+
+      const { error } = await supabase.from('push_subscriptions').upsert(record, { onConflict: 'endpoint' })
+      if (!error) return { ok: true }
+
+      // The endpoint may be left behind by an earlier install, in which case the
+      // update is refused: clear it and insert cleanly instead.
+      console.warn('[useNotifications] upsert of the push subscription failed, retrying with a clean insert:', error.message)
+      await deleteSubscriptionByEndpoint(json.endpoint)
+
+      const { error: insertError } = await supabase.from('push_subscriptions').insert(record)
+      if (insertError) {
+        console.error('[useNotifications] could not store the push subscription:', insertError)
+        return { ok: false, reason: `Salvataggio della sottoscrizione non riuscito: ${insertError.message}` }
+      }
+
+      return { ok: true }
     } catch (err: unknown) {
+      const reason = err instanceof Error ? err.message : String(err)
       console.warn('Could not register push subscription:', err)
+      return { ok: false, reason: `Registrazione push non riuscita: ${reason}` }
     } finally {
       isSubscribing.value = false
     }
   }
 
   async function resubscribePush(): Promise<boolean> {
-    if (!import.meta.client || !('serviceWorker' in navigator) || !user.value) {
+    if (!import.meta.client || !('serviceWorker' in navigator) || !userId.value) {
       toast.add({
         title: 'Non supportato',
         description: 'Impossibile configurare le notifiche push in questo browser.',
@@ -234,7 +269,7 @@ export function useNotifications() {
       // 1. Force unsubscribe stale browser subscription for this device only
       const existing = await reg.pushManager.getSubscription()
       if (existing) {
-        await supabase.from('push_subscriptions').delete().eq('endpoint', existing.endpoint).catch(() => {})
+        await deleteSubscriptionByEndpoint(existing.endpoint)
         await existing.unsubscribe().catch(() => {})
       }
 
@@ -249,26 +284,21 @@ export function useNotifications() {
         throw new Error('Dati di sottoscrizione incompleti dal browser.')
       }
 
-      const { error } = await supabase.from('push_subscriptions').upsert({
-        user_id: user.value.id,
+      const record = {
+        user_id: userId.value,
         endpoint: json.endpoint,
         p256dh: json.keys.p256dh,
         auth: json.keys.auth,
         user_agent: navigator.userAgent,
         last_seen_at: new Date().toISOString()
-      }, { onConflict: 'endpoint' })
+      }
+
+      const { error } = await supabase.from('push_subscriptions').upsert(record, { onConflict: 'endpoint' })
 
       if (error) {
-        console.warn('Upsert failed, trying clean insert fallback:', error)
-        await supabase.from('push_subscriptions').delete().eq('endpoint', json.endpoint).catch(() => {})
-        const { error: insErr } = await supabase.from('push_subscriptions').insert({
-          user_id: user.value.id,
-          endpoint: json.endpoint,
-          p256dh: json.keys.p256dh,
-          auth: json.keys.auth,
-          user_agent: navigator.userAgent,
-          last_seen_at: new Date().toISOString()
-        })
+        console.warn('Upsert failed, trying clean insert fallback:', error.message)
+        await deleteSubscriptionByEndpoint(json.endpoint)
+        const { error: insErr } = await supabase.from('push_subscriptions').insert(record)
         if (insErr) throw insErr
       }
 
@@ -415,7 +445,7 @@ export function useNotifications() {
       return `Accettata dal servizio push per ${delivered} ${delivered === 1 ? 'dispositivo' : 'dispositivi'}.`
     }
     if (devices === 0) {
-      return 'Nessun dispositivo registrato per questo account: apri l\'app e riprova.'
+      return 'Il server non trova dispositivi registrati per questo account: riprova con «Reimposta e risincronizza».'
     }
     if (failure) {
       return `Il servizio push ha rifiutato l'invio (${failure.status ?? 'errore'}): ${failure.reason.slice(0, 160)}`
@@ -432,7 +462,7 @@ export function useNotifications() {
       if (!granted) return false
     }
 
-    if (!user.value) {
+    if (!userId.value) {
       toast.add({
         title: 'Accesso richiesto',
         description: 'Effettua l\'accesso per ricevere notifiche push.',
@@ -441,12 +471,21 @@ export function useNotifications() {
       return false
     }
 
-    // Register this device before asking the server to push to it.
-    await subscribePush()
+    // Register this device before asking the server to push to it, and say why if
+    // that registration fails — otherwise the server just reports "no devices".
+    const registration = await subscribePush()
+    if (!registration.ok) {
+      toast.add({
+        title: 'Registrazione push non riuscita',
+        description: registration.reason || 'Questo dispositivo non è registrato per le notifiche.',
+        color: 'error'
+      })
+      return false
+    }
 
     let summary: PushDeliverySummary | null = null
     try {
-      summary = await invokeReminders({ testUserId: user.value.id, delaySeconds })
+      summary = await invokeReminders({ testUserId: userId.value, delaySeconds })
     } catch (err: any) {
       toast.add({
         title: 'Errore invio push',
@@ -540,7 +579,7 @@ export function useNotifications() {
 
   // Reactively register or renew push subscription as soon as user & permission are ready
   watch(
-    [() => user.value?.id, permission],
+    [() => userId.value, permission],
     ([userId, perm]) => {
       if (userId && perm === 'granted') {
         subscribePush()
@@ -566,7 +605,7 @@ export function useNotifications() {
       if (document.visibilityState === 'visible') {
         refreshPermission()
         checkReminders()
-        if (user.value && permission.value === 'granted') {
+        if (userId.value && permission.value === 'granted') {
           subscribePush()
         }
       }
