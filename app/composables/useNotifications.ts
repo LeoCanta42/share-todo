@@ -32,26 +32,6 @@ type PushRegistration = {
   reason?: string
 }
 
-/** A device the server would push to for this account. */
-type RegisteredPushDevice = {
-  id: number
-  endpointHost: string
-  platform: string
-  createdAt: string | null
-  lastSeenAt: string | null
-}
-
-/** One push this device actually received, as recorded by the service worker. */
-type PushReceipt = {
-  at: string
-  title?: string
-  tag?: string
-  sentAt?: number | null
-  lateByMs?: number | null
-  shown?: boolean
-  error?: string | null
-}
-
 export function useNotifications() {
   const toast = useToast()
   const config = useRuntimeConfig()
@@ -245,102 +225,6 @@ export function useNotifications() {
     }
   }
 
-  async function resubscribePush(): Promise<boolean> {
-    if (!import.meta.client || !('serviceWorker' in navigator) || !userId.value) {
-      toast.add({
-        title: 'Non supportato',
-        description: 'Impossibile configurare le notifiche push in questo browser.',
-        color: 'warning'
-      })
-      return false
-    }
-
-    refreshPermission()
-    if (permission.value !== 'granted') {
-      const granted = await requestPermission()
-      if (!granted) return false
-    }
-
-    const vapidKey = (config.public.vapidPublicKey || '').trim()
-    if (!vapidKey) {
-      toast.add({
-        title: 'Chiave VAPID non trovata',
-        description: 'La chiave pubblica VAPID non è configurata nell\'ambiente.',
-        color: 'error'
-      })
-      return false
-    }
-
-    isSubscribing.value = true
-    try {
-      let reg = await navigator.serviceWorker.getRegistration()
-      if (!reg?.active) {
-        reg = await Promise.race([
-          navigator.serviceWorker.ready,
-          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 5000))
-        ])
-      }
-      if (!reg || !('pushManager' in reg)) {
-        throw new Error('PushManager non disponibile nel service worker.')
-      }
-
-      await reg.update().catch(() => {})
-
-      // 1. Force unsubscribe stale browser subscription for this device only
-      const existing = await reg.pushManager.getSubscription()
-      if (existing) {
-        await deleteSubscriptionByEndpoint(existing.endpoint)
-        await existing.unsubscribe().catch(() => {})
-      }
-
-      // 2. Re-subscribe cleanly with current key
-      const newSub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(vapidKey)
-      })
-
-      const json = newSub.toJSON()
-      if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) {
-        throw new Error('Dati di sottoscrizione incompleti dal browser.')
-      }
-
-      const record = {
-        user_id: userId.value,
-        endpoint: json.endpoint,
-        p256dh: json.keys.p256dh,
-        auth: json.keys.auth,
-        user_agent: navigator.userAgent,
-        last_seen_at: new Date().toISOString()
-      }
-
-      const { error } = await supabase.from('push_subscriptions').upsert(record, { onConflict: 'endpoint' })
-
-      if (error) {
-        console.warn('Upsert failed, trying clean insert fallback:', error.message)
-        await deleteSubscriptionByEndpoint(json.endpoint)
-        const { error: insErr } = await supabase.from('push_subscriptions').insert(record)
-        if (insErr) throw insErr
-      }
-
-      toast.add({
-        title: 'Notifiche sincronizzate!',
-        description: 'Registrazione push rinnovata con successo sul server.',
-        color: 'success'
-      })
-      return true
-    } catch (err: any) {
-      console.error('[resubscribePush] error:', err)
-      toast.add({
-        title: 'Errore sincronizzazione',
-        description: err.message || 'Impossibile rinnovare la registrazione push.',
-        color: 'error'
-      })
-      return false
-    } finally {
-      isSubscribing.value = false
-    }
-  }
-
   async function showNotification(title: string, options: NotificationOptions & { data?: { url?: string } }) {
     if (!import.meta.client) return
     if (permission.value !== 'granted') return
@@ -375,41 +259,6 @@ export function useNotifications() {
         console.error('Error showing window Notification:', err)
       }
     }
-  }
-
-  async function sendTestNotification(delaySeconds = 0) {
-    if (!import.meta.client) return
-    refreshPermission()
-
-    if (!isSupported.value) {
-      toast.add({
-        title: 'Notifiche non supportate',
-        description: 'Questo browser non supporta le notifiche. Su iPhone/iPad, aggiungi l\'app alla schermata Home.',
-        color: 'warning'
-      })
-      return
-    }
-
-    if (permission.value !== 'granted') {
-      const granted = await requestPermission()
-      if (!granted) return
-    }
-
-    // Ensure push subscription is synchronized with backend
-    await subscribePush()
-
-    if (delaySeconds === 0) {
-      // 1. Show immediate local feedback notification
-      await showNotification('ShareToDo — Notifica locale', {
-        body: 'Permessi attivi! Invio notifica push dal server in corso...',
-        icon: '/icons/icon-192.png',
-        tag: `test-local-${Date.now()}`,
-        data: { url: '/' }
-      })
-    }
-
-    // 2. Trigger real server push
-    await sendServerTestNotification(delaySeconds)
   }
 
   /**
@@ -448,100 +297,6 @@ export function useNotifications() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       return (await res.json()) as PushDeliverySummary
     }
-  }
-
-  /** Turns the server's delivery report into one sentence for the user. */
-  function describePushSummary(summary: PushDeliverySummary | null): string {
-    if (!summary) return 'Il server non ha risposto come previsto.'
-
-    const devices = summary.subscriptions ?? 0
-    const delivered = summary.sent ?? 0
-    const failure = summary.failures?.[0]
-
-    if (summary.scheduled) {
-      return `Il server invierà la notifica a ${devices} ${devices === 1 ? 'dispositivo' : 'dispositivi'} tra pochi secondi.`
-    }
-    if (delivered > 0) {
-      return `Accettata dal servizio push per ${delivered} ${delivered === 1 ? 'dispositivo' : 'dispositivi'}.`
-    }
-    if (devices === 0) {
-      return 'Il server non trova dispositivi registrati per questo account: riprova con «Reimposta e risincronizza».'
-    }
-    if (failure) {
-      return `Il servizio push ha rifiutato l'invio (${failure.status ?? 'errore'}): ${failure.reason.slice(0, 160)}`
-    }
-    return summary.message || 'Invio non riuscito.'
-  }
-
-  async function sendServerTestNotification(delaySeconds = 0): Promise<boolean> {
-    if (!import.meta.client) return false
-    refreshPermission()
-
-    if (permission.value !== 'granted') {
-      const granted = await requestPermission()
-      if (!granted) return false
-    }
-
-    if (!userId.value) {
-      toast.add({
-        title: 'Accesso richiesto',
-        description: 'Effettua l\'accesso per ricevere notifiche push.',
-        color: 'warning'
-      })
-      return false
-    }
-
-    // Register this device before asking the server to push to it, and say why if
-    // that registration fails — otherwise the server just reports "no devices".
-    const registration = await subscribePush()
-    if (!registration.ok) {
-      toast.add({
-        title: 'Registrazione push non riuscita',
-        description: registration.reason || 'Questo dispositivo non è registrato per le notifiche.',
-        color: 'error'
-      })
-      return false
-    }
-
-    let summary: PushDeliverySummary | null = null
-    try {
-      summary = await invokeReminders({ testUserId: userId.value, delaySeconds })
-    } catch (err: any) {
-      toast.add({
-        title: 'Errore invio push',
-        description: err?.message || 'Impossibile contattare la funzione di invio.',
-        color: 'error'
-      })
-      return false
-    }
-
-    // The delayed test is scheduled server-side and answers at once, so the app
-    // can be closed the moment this confirmation appears.
-    if (summary?.scheduled) {
-      const devices = summary.subscriptions ?? 0
-      toast.add({
-        title: `Test programmato tra ${delaySeconds} secondi`,
-        description: `Ora puoi chiudere l'app: il server invierà la notifica a ${devices} ${devices === 1 ? 'dispositivo' : 'dispositivi'}.`,
-        color: 'success'
-      })
-      return true
-    }
-
-    if ((summary?.sent ?? 0) > 0) {
-      toast.add({
-        title: 'Notifica push inviata dal server!',
-        description: describePushSummary(summary),
-        color: 'success'
-      })
-      return true
-    }
-
-    toast.add({
-      title: delaySeconds > 0 ? 'Test non programmato' : 'Nessuna notifica inviata',
-      description: describePushSummary(summary),
-      color: 'warning'
-    })
-    return false
   }
 
   function triggerServerReminders() {
@@ -597,108 +352,6 @@ export function useNotifications() {
     }
   }
 
-  /* ------------------------------------------------------------- diagnostics */
-
-  function endpointHost(endpoint: string): string {
-    try {
-      return new URL(endpoint).hostname
-    } catch {
-      return 'endpoint sconosciuto'
-    }
-  }
-
-  function describePlatform(userAgent: string | null): string {
-    const ua = userAgent || ''
-    const os =
-      /Android/i.test(ua) ? 'Android'
-        : /iPhone|iPad|iPod/i.test(ua) ? 'iOS'
-          : /Windows/i.test(ua) ? 'Windows'
-            : /Macintosh|Mac OS X/i.test(ua) ? 'macOS'
-              : /Linux/i.test(ua) ? 'Linux'
-                : 'SO sconosciuto'
-    const browser =
-      /Edg\//.test(ua) ? 'Edge'
-        : /OPR\//.test(ua) ? 'Opera'
-          : /Firefox\//.test(ua) ? 'Firefox'
-            : /Chrome\//.test(ua) ? 'Chrome'
-              : /Safari\//.test(ua) ? 'Safari'
-                : 'browser sconosciuto'
-    return `${os} · ${browser}`
-  }
-
-  /**
-   * The devices the server holds for this account. `push_subscriptions` is scoped
-   * to its owner by RLS, so this only ever reads the caller's own rows — and an
-   * empty list is the answer to "why does the server say there is nothing to
-   * push to?".
-   */
-  async function loadRegisteredDevices(): Promise<RegisteredPushDevice[]> {
-    if (!import.meta.client || !userId.value) return []
-
-    try {
-      const { data, error } = await supabase
-        .from('push_subscriptions')
-        .select('id, endpoint, user_agent, created_at, last_seen_at')
-        .eq('user_id', userId.value)
-        .order('created_at', { ascending: false })
-
-      if (error) {
-        console.warn('[useNotifications] could not read push_subscriptions:', error.message)
-        return []
-      }
-
-      return (data ?? []).map(row => ({
-        id: row.id,
-        endpointHost: endpointHost(row.endpoint),
-        platform: describePlatform(row.user_agent),
-        createdAt: row.created_at,
-        lastSeenAt: row.last_seen_at
-      }))
-    } catch (err: unknown) {
-      console.warn('[useNotifications] could not read push_subscriptions:', err)
-      return []
-    }
-  }
-
-  /**
-   * The receipt log the service worker keeps for this device. Empty means the
-   * worker has not received a push here at all (or is not running), which is what
-   * separates "the phone never got it" from "the phone got it and showed it late".
-   */
-  async function fetchPushLog(timeoutMs = 2000): Promise<PushReceipt[]> {
-    if (!import.meta.client || !('serviceWorker' in navigator)) return []
-
-    let worker: ServiceWorker | null = null
-    try {
-      const registration = await navigator.serviceWorker.getRegistration()
-      worker = registration?.active ?? navigator.serviceWorker.controller ?? null
-    } catch {
-      worker = null
-    }
-    if (!worker) return []
-
-    return new Promise<PushReceipt[]>((resolve) => {
-      const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-      let timer: ReturnType<typeof setTimeout> | undefined
-
-      const finish = (entries: PushReceipt[]) => {
-        if (timer) clearTimeout(timer)
-        navigator.serviceWorker.removeEventListener('message', onMessage)
-        resolve(entries)
-      }
-
-      const onMessage = (event: MessageEvent) => {
-        const data = event.data || {}
-        if (data.type !== 'sharetodo:push-log' || data.requestId !== requestId) return
-        finish(Array.isArray(data.entries) ? data.entries : [])
-      }
-
-      timer = setTimeout(() => finish([]), timeoutMs)
-      navigator.serviceWorker.addEventListener('message', onMessage)
-      worker!.postMessage({ type: 'sharetodo:push-log', requestId })
-    })
-  }
-
   // Reactively register or renew push subscription as soon as user & permission are ready
   watch(
     [() => userId.value, permission],
@@ -745,12 +398,7 @@ export function useNotifications() {
     isSupported,
     isSubscribing,
     requestPermission,
-    sendTestNotification,
-    sendServerTestNotification,
     subscribePush,
-    resubscribePush,
-    checkReminders,
-    loadRegisteredDevices,
-    fetchPushLog
+    checkReminders
   }
 }

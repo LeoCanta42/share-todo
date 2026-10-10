@@ -18,32 +18,11 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, GET, OPTIONS'
 }
 
-const MAX_PUSH_DELAY_SECONDS = 60
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   })
-}
-
-/**
- * The `EdgeRuntime.waitUntil` hook Supabase exposes, when the runtime provides it.
- *
- * This is what makes the delayed test meaningful: that test tells the user to
- * close the app, and a delay awaited inside the request would be cancelled (and
- * always holds the connection open) the moment the app asking for it goes away.
- *
- * Note the task must only be *started* once we know the runtime keeps it alive —
- * building the promise first would run the send twice on runtimes without it.
- */
-function backgroundRuntime(): { waitUntil: (task: Promise<unknown>) => void } | null {
-  const runtime = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime
-  return typeof runtime?.waitUntil === 'function'
-    ? (runtime as { waitUntil: (task: Promise<unknown>) => void })
-    : null
 }
 
 /** Apple's push service wants the APNs headers; other services ignore them. */
@@ -75,143 +54,6 @@ serve(async (req) => {
   const supabase = createClient(supabaseUrl, serviceRoleKey)
 
   try {
-    const reqBody = await req.json().catch(() => ({}))
-    const testUserId = reqBody?.testUserId
-    const delaySeconds = Number(reqBody?.delaySeconds || 0)
-
-    if (testUserId) {
-      // `sentAt` is stamped per send so the device can report how late a push
-      // arrived: the service worker logs the difference between sending and
-      // receiving, which is what tells a notification the phone only surfaces on
-      // next launch apart from one that was delivered on time.
-      const testPush = {
-        title: 'ShareToDo — Notifica di prova',
-        body: 'La notifica push dal server è arrivata con successo! Funziona anche ad app chiusa! 🔔',
-        icon: '/icons/icon-192.png',
-        url: '/',
-        data: { url: '/' }
-      }
-
-      const loadTestSubscriptions = async () => {
-        const { data, error } = await supabase
-          .from('push_subscriptions')
-          .select('id, endpoint, p256dh, auth, user_id')
-          .eq('user_id', testUserId)
-
-        if (error) {
-          const reason = `Could not read push_subscriptions: ${error.message}`
-          console.error(`[test-push] ${reason}`)
-          return { subscriptions: [] as any[], error: reason }
-        }
-        return { subscriptions: data ?? [], error: null as string | null }
-      }
-
-      const deliverTestPush = async (subscriptions: any[]) => {
-        const failures: Array<{ status: number | null; reason: string }> = []
-        let sent = 0
-
-        for (const sub of subscriptions) {
-          try {
-            await webpush.sendNotification(
-              {
-                endpoint: sub.endpoint,
-                keys: { p256dh: sub.p256dh, auth: sub.auth }
-              },
-              JSON.stringify({
-                ...testPush,
-                tag: `test-push-${Date.now()}-${sub.id}`,
-                sentAt: Date.now()
-              }),
-              {
-                TTL: 86400,
-                urgency: 'high',
-                headers: pushHeadersFor(sub.endpoint)
-              }
-            )
-            sent++
-          } catch (pushErr: any) {
-            const status = pushErr?.statusCode ?? null
-            const reason = String(pushErr?.body || pushErr?.message || 'unknown error')
-            failures.push({ status, reason })
-            console.error(`[test-push] send to ${sub.endpoint} failed (${status ?? 'n/a'}): ${reason}`)
-            if (status === 404 || status === 410) {
-              await supabase.from('push_subscriptions').delete().eq('id', sub.id)
-            }
-          }
-        }
-
-        console.log(`[test-push] user=${testUserId} devices=${subscriptions.length} sent=${sent} failed=${failures.length}`)
-        return { sent, failures }
-      }
-
-      if (delaySeconds > 0) {
-        // Delayed variant: answer straight away and push from the background, so
-        // closing the app right after pressing the button cannot cut the send off.
-        const { subscriptions, error } = await loadTestSubscriptions()
-
-        if (error || subscriptions.length === 0) {
-          return jsonResponse({
-            message: error ?? 'No subscriptions found for user',
-            scheduled: false,
-            subscriptions: 0,
-            sent: 0,
-            failures: error ? [{ status: null, reason: error }] : []
-          })
-        }
-
-        const delayMs = Math.min(Math.max(delaySeconds, 1), MAX_PUSH_DELAY_SECONDS) * 1000
-        const runtime = backgroundRuntime()
-
-        if (runtime) {
-          runtime.waitUntil(
-            (async () => {
-              await sleep(delayMs)
-              await deliverTestPush(subscriptions)
-            })().catch((err) => console.error('[test-push] background send failed:', err))
-          )
-          return jsonResponse({
-            message: 'Test push scheduled',
-            scheduled: true,
-            delaySeconds,
-            subscriptions: subscriptions.length,
-            sent: 0,
-            failures: []
-          })
-        }
-
-        // No background runtime available: fall back to the old blocking path so
-        // the push still goes out as long as the caller keeps the request open.
-        await sleep(delayMs)
-        const { sent, failures } = await deliverTestPush(subscriptions)
-        return jsonResponse({
-          message: 'Test push processed',
-          scheduled: true,
-          delaySeconds,
-          subscriptions: subscriptions.length,
-          sent,
-          failures
-        })
-      }
-
-      const { subscriptions, error } = await loadTestSubscriptions()
-
-      if (error) {
-        return jsonResponse({ message: error, subscriptions: 0, sent: 0, failures: [{ status: null, reason: error }] })
-      }
-      if (subscriptions.length === 0) {
-        return jsonResponse({ message: 'No subscriptions found for user', subscriptions: 0, sent: 0, failures: [] })
-      }
-
-      const { sent, failures } = await deliverTestPush(subscriptions)
-      return jsonResponse({
-        message: sent > 0 ? 'Test push processed' : 'Test push could not be delivered',
-        scheduled: false,
-        subscriptions: subscriptions.length,
-        sent,
-        failures
-      })
-    }
-
     const now = new Date()
     const nowMs = now.getTime()
     const twentyFourHoursAgoMs = nowMs - 24 * 60 * 60 * 1000
@@ -421,7 +263,6 @@ serve(async (req) => {
         body,
         url: `/?todo=${todo.id}`,
         tag: `todo-${todo.id}`,
-        sentAt: Date.now(),
         data: {
           url: `/?todo=${todo.id}`,
           todoId: todo.id
