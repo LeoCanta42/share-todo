@@ -221,7 +221,16 @@ serve(async (req) => {
                 auth: sub.auth
               }
             },
-            payload
+            payload,
+            {
+              TTL: 86400,
+              urgency: 'high',
+              topic: `todo-${todo.id}`,
+              headers: {
+                Urgency: 'high',
+                Topic: `todo-${todo.id}`
+              }
+            }
           )
           sentCount++
         } catch (pushErr: any) {

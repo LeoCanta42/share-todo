@@ -17,13 +17,13 @@
 --    supabase secrets set VAPID_PRIVATE_KEY="la_tua_chiave_privata"
 --    supabase secrets set VAPID_SUBJECT="https://tuodominio.it"
 
--- Schedulazione del cron job ogni 2 minuti:
+-- Schedulazione del cron job ogni minuto:
 -- Rimuove eventuale vecchio job prima di ricrearlo
 SELECT cron.unschedule('send-reminders-job') WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'send-reminders-job');
 
 SELECT cron.schedule(
   'send-reminders-job',
-  '*/2 * * * *',
+  '* * * * *',
   $$
   SELECT net.http_post(
     url := 'https://newhtivqunqtjswkxwhp.supabase.co/functions/v1/send-reminders',

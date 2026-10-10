@@ -19,6 +19,7 @@ self.addEventListener('push', (event) => {
     body: data.body || 'Hai un\'attività in scadenza',
     icon: data.icon || '/icons/icon-192.png',
     badge: data.badge || '/icons/icon-192.png',
+    vibrate: [200, 100, 200],
     data: data.data || { url: data.url || '/' },
     tag: data.tag || 'share-todo-reminder',
     renotify: true
