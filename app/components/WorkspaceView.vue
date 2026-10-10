@@ -77,8 +77,11 @@ const defaultGroupId = computed<string | null>(() => {
   return root?.group.id ?? null
 })
 
-function openDetail(todo: TodoWithGroup) {
+const initialEditMode = ref(false)
+
+function openDetail(todo: TodoWithGroup, startInEdit = false) {
   detailId.value = todo.id
+  initialEditMode.value = startInEdit
   isDetailOpen.value = true
 }
 
@@ -136,6 +139,8 @@ function handleDetailSave(payload: {
   groupId: string | null
   dueAt: string | null
   dueAllDay: boolean
+  reminderMinutes?: number | null
+  reminderAt?: string | null
 }) {
   const todo = todos.value.find(item => item.id === payload.id)
   if (!todo) return
@@ -146,10 +151,17 @@ function handleDetailSave(payload: {
   if ((payload.groupId ?? null) !== (todo.group_id ?? null)) {
     updateTodoGroup(payload.id, payload.groupId)
   }
-  if (payload.dueAt !== todo.due_at || payload.dueAllDay !== Boolean(todo.due_all_day)) {
+  if (
+    payload.dueAt !== todo.due_at ||
+    payload.dueAllDay !== Boolean(todo.due_all_day) ||
+    (payload.reminderMinutes ?? null) !== (todo.reminder_minutes ?? null) ||
+    (payload.reminderAt ?? null) !== (todo.reminder_at ?? null)
+  ) {
     updateTodoDueDate(payload.id, {
       dueAt: payload.dueAt,
-      dueAllDay: payload.dueAllDay
+      dueAllDay: payload.dueAllDay,
+      reminderMinutes: payload.reminderMinutes,
+      reminderAt: payload.reminderAt
     })
   }
 }
@@ -186,8 +198,6 @@ function clearFilters() {
       <TodoList
         @toggle="toggleTodo"
         @toggle-all="(todosToToggle) => toggleTodos(todosToToggle)"
-        @update-title="updateTodoTitle"
-        @update-group="updateTodoGroup"
         @open-group="openGroup"
         @open-detail="openDetail"
         @delete="handleDelete"
@@ -201,6 +211,7 @@ function clearFilters() {
       v-model:open="isDetailOpen"
       :todo="detailTodo"
       :tree="tree"
+      :initial-edit="initialEditMode"
       @toggle="toggleTodo"
       @save="handleDetailSave"
       @delete="handleDelete"

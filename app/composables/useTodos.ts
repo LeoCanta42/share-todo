@@ -127,6 +127,7 @@ export function useTodos() {
         due_at: dueOptions?.dueAt ?? null,
         due_all_day: dueOptions?.dueAllDay ?? false,
         reminder_minutes: dueOptions?.reminderMinutes ?? null,
+        reminder_at: dueOptions?.reminderAt ?? null,
         timezone: dueOptions?.timezone ?? (typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : 'UTC')
       }
 
@@ -134,14 +135,32 @@ export function useTodos() {
         payload.user_id = userId.value
       }
 
-      const { data, error } = await supabase
+      let insertResult = await supabase
         .from('todos')
         .insert(payload)
         .select(`*, group:groups(${GROUP_COLUMNS})`)
         .single() as unknown as {
           data: TodoWithGroup | null
-          error: { message: string } | null
+          error: { message: string, code?: string } | null
         }
+
+      if (insertResult.error && (insertResult.error.message.includes('reminder_at') || insertResult.error.code === 'PGRST204')) {
+        delete (payload as any).reminder_at
+        if (!payload.due_at && dueOptions?.reminderAt) {
+          payload.due_at = dueOptions.reminderAt
+          payload.reminder_minutes = 0
+        }
+        insertResult = await supabase
+          .from('todos')
+          .insert(payload)
+          .select(`*, group:groups(${GROUP_COLUMNS})`)
+          .single() as unknown as {
+            data: TodoWithGroup | null
+            error: { message: string, code?: string } | null
+          }
+      }
+
+      const { data, error } = insertResult
 
       if (error) {
         toast.add({
@@ -365,10 +384,12 @@ export function useTodos() {
     const snapshot = todos.value.find(todo => todo.id === id)
     if (!snapshot) return false
 
-    const changes = {
+    const changes: Record<string, any> = {
       due_at: dueOptions.dueAt ?? null,
       due_all_day: dueOptions.dueAllDay ?? false,
       reminder_minutes: dueOptions.reminderMinutes ?? null,
+      reminder_at: dueOptions.reminderAt ?? null,
+      reminder_sent_at: null,
       timezone: dueOptions.timezone ?? (typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : 'UTC')
     }
 
@@ -376,37 +397,63 @@ export function useTodos() {
     activeActionId.value = id
 
     try {
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from('todos')
         .update(changes)
         .eq('id', id)
         .select('id')
 
+      if (error && (error.message.includes('reminder_at') || (error as any).code === 'PGRST204')) {
+        delete changes.reminder_at
+        if (!changes.due_at && dueOptions.reminderAt) {
+          changes.due_at = dueOptions.reminderAt
+          changes.reminder_minutes = 0
+        }
+        patch(id, changes)
+        const retry = await supabase
+          .from('todos')
+          .update(changes)
+          .eq('id', id)
+          .select('id')
+        data = retry.data
+        error = retry.error
+      }
+
       if (error) {
         restore(id, snapshot)
         toast.add({
-          title: 'Errore scadenza',
+          title: 'Errore scadenza o promemoria',
           description: error.message,
           color: 'error'
         })
         return false
       } else if (!data || data.length === 0) {
         restore(id, snapshot)
-        notPermitted('Scadenza non salvata')
+        notPermitted('Modifiche non salvate')
         return false
       } else {
         toast.add({
-          title: 'Scadenza aggiornata',
+          title: 'Promemoria salvato',
           color: 'success'
         })
         return true
       }
     } catch (err: unknown) {
-      console.error('Error updating due date:', err)
+      console.error('Error updating due date / reminder:', err)
       restore(id, snapshot)
       return false
     } finally {
       activeActionId.value = null
+    }
+  }
+
+  async function markReminderSent(id: number): Promise<void> {
+    const sentAt = new Date().toISOString()
+    patch(id, { reminder_sent_at: sentAt })
+    try {
+      await supabase.from('todos').update({ reminder_sent_at: sentAt }).eq('id', id)
+    } catch (err: unknown) {
+      console.error('Error marking reminder sent:', err)
     }
   }
 
@@ -787,6 +834,7 @@ export function useTodos() {
     updateTodoTitle,
     updateTodoGroup,
     updateTodoDueDate,
+    markReminderSent,
     deleteTodo,
     clearCompleted
   }

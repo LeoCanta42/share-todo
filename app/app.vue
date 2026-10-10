@@ -10,6 +10,7 @@ import { useQuickAdd } from '~/composables/useQuickAdd'
 import { useShareDialog } from '~/composables/useShareDialog'
 import { useAppBadge } from '~/composables/useAppBadge'
 import { useGroups } from '~/composables/useGroups'
+import { useNotifications } from '~/composables/useNotifications'
 import { appleSplashLinks } from '~/utils/appleSplash'
 
 useSeoMeta({
@@ -33,6 +34,9 @@ const { open: isShareModalOpen, targetGroup: shareTarget, openShare } = useShare
 // Projects the stored preferences onto <html> (accent, density, text size) and
 // keeps the browser/PWA theme colour in step with the chosen accent.
 useAppearance()
+
+// Browser notification scheduling and Push subscription syncing.
+useNotifications()
 
 // Icon badge of the installed app: how many activities are still to do. Lives in
 // the shell rather than on a page so it is right whatever page you are on — and 0

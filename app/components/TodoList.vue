@@ -23,10 +23,8 @@ interface Row {
 const emit = defineEmits<{
   (e: 'toggle', todo: TodoWithGroup): void
   (e: 'toggleAll', todos: TodoWithGroup[]): void
-  (e: 'updateTitle', id: number, newTitle: string): void
-  (e: 'updateGroup', id: number, groupId: string | null): void
   (e: 'delete', id: number): void
-  (e: 'openDetail', todo: TodoWithGroup): void
+  (e: 'openDetail', todo: TodoWithGroup, startInEdit?: boolean): void
   (e: 'openGroup', groupId: string): void
   (e: 'clearFilters'): void
   (e: 'create'): void
@@ -172,12 +170,9 @@ function handleToggleSection(todosToToggle: TodoWithGroup[]) {
             :is-pending="activeActionId === row.todo.id"
             :is-shared="row.shared"
             :can-edit="row.canEdit"
-            :tree="tree"
             @toggle="emit('toggle', $event)"
-            @update-title="(id, title) => emit('updateTitle', id, title)"
-            @update-group="(id, groupId) => emit('updateGroup', id, groupId)"
             @open-group="(groupId) => emit('openGroup', groupId)"
-            @open-detail="emit('openDetail', $event)"
+            @open-detail="(todo, startInEdit) => emit('openDetail', todo, startInEdit)"
             @delete="emit('delete', $event)"
           />
         </TransitionGroup>
@@ -194,12 +189,9 @@ function handleToggleSection(todosToToggle: TodoWithGroup[]) {
         :is-pending="activeActionId === row.todo.id"
         :is-shared="row.shared"
         :can-edit="row.canEdit"
-        :tree="tree"
         @toggle="emit('toggle', $event)"
-        @update-title="(id, title) => emit('updateTitle', id, title)"
-        @update-group="(id, groupId) => emit('updateGroup', id, groupId)"
         @open-group="(groupId) => emit('openGroup', groupId)"
-        @open-detail="emit('openDetail', $event)"
+        @open-detail="(todo, startInEdit) => emit('openDetail', todo, startInEdit)"
         @delete="emit('delete', $event)"
       />
     </TransitionGroup>

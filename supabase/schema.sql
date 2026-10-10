@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS public.todos (
   due_at TIMESTAMPTZ,
   due_all_day BOOLEAN NOT NULL DEFAULT FALSE,
   reminder_minutes INTEGER,
+  reminder_at TIMESTAMPTZ,
   reminder_sent_at TIMESTAMPTZ,
   timezone TEXT
 );
@@ -55,12 +56,14 @@ ALTER TABLE public.todos ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.u
 ALTER TABLE public.todos ADD COLUMN IF NOT EXISTS due_at TIMESTAMPTZ;
 ALTER TABLE public.todos ADD COLUMN IF NOT EXISTS due_all_day BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE public.todos ADD COLUMN IF NOT EXISTS reminder_minutes INTEGER;
+ALTER TABLE public.todos ADD COLUMN IF NOT EXISTS reminder_at TIMESTAMPTZ;
 ALTER TABLE public.todos ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ;
 ALTER TABLE public.todos ADD COLUMN IF NOT EXISTS timezone TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_todos_user_id ON public.todos(user_id);
 CREATE INDEX IF NOT EXISTS idx_todos_group_name ON public.todos(group_name);
 CREATE INDEX IF NOT EXISTS idx_todos_due_at ON public.todos (due_at) WHERE due_at IS NOT NULL AND completed = FALSE;
+CREATE INDEX IF NOT EXISTS idx_todos_reminder_at ON public.todos (reminder_at) WHERE reminder_at IS NOT NULL AND reminder_sent_at IS NULL AND completed = FALSE;
 
 
 -- ---------------------------------------------------------------- 1.2 notes

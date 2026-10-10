@@ -4,6 +4,7 @@ import { useAppearance } from '~/composables/useAppearance'
 import { useConfirm } from '~/composables/useConfirm'
 import { usePwa } from '~/composables/usePwa'
 import { useAuth } from '~/composables/useAuth'
+import { useNotifications } from '~/composables/useNotifications'
 import { MIN_PASSWORD_LENGTH } from '~/utils/password'
 import { DEFAULT_GROUPS, GROUP_ICONS, GROUP_TONES } from '~/utils/groups'
 
@@ -27,6 +28,7 @@ const { tree, flat, groups, byId, loadGroups, createGroup, renameGroup, setGroup
 const { canInstall, install, needRefresh, updateApp, isIos, offlineReady, isInstalled, manualInstallHint } = usePwa()
 const { changePassword, logout, loading: authLoading } = useAuth()
 const { userEmail } = useCurrentUser()
+const { permission: notificationPermission, requestPermission: requestNotificationPermission, sendTestNotification } = useNotifications()
 const { ask } = useConfirm()
 const toast = useToast()
 
@@ -729,6 +731,60 @@ async function handleInstall() {
 
       <!-- ---------------------------------------------------------------- -->
       <section v-else class="anim-fade space-y-4">
+        <!-- Notifiche e promemoria -->
+        <div class="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
+          <div class="flex items-start gap-3">
+            <span class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-accent-50 text-accent-600 dark:bg-accent-950/50 dark:text-accent-400">
+              <UIcon name="i-lucide-bell" class="h-5 w-5" />
+            </span>
+            <div class="min-w-0 flex-1">
+              <h3 class="text-sm font-bold text-slate-900 dark:text-white">Notifiche e promemoria</h3>
+              <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                Ricevi promemoria prima della scadenza delle tue attività.
+              </p>
+
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                <template v-if="notificationPermission === 'granted'">
+                  <span class="inline-flex items-center gap-1.5 rounded-xl bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
+                    <UIcon name="i-lucide-check-circle-2" class="h-3.5 w-3.5" />
+                    Notifiche attive
+                  </span>
+                  <UButton
+                    color="neutral"
+                    variant="soft"
+                    size="sm"
+                    icon="i-lucide-bell-ring"
+                    class="rounded-xl font-medium"
+                    @click="sendTestNotification"
+                  >
+                    Invia notifica di prova
+                  </UButton>
+                </template>
+                <template v-else-if="notificationPermission === 'denied'">
+                  <span class="inline-flex items-center gap-1.5 rounded-xl bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 dark:bg-red-950/50 dark:text-red-300">
+                    <UIcon name="i-lucide-bell-off" class="h-3.5 w-3.5" />
+                    Bloccate dal browser
+                  </span>
+                  <p class="w-full text-[11px] text-slate-400 dark:text-slate-500">
+                    Per abilitarle, consenti le notifiche nelle impostazioni del sito nel tuo browser.
+                  </p>
+                </template>
+                <template v-else>
+                  <UButton
+                    color="primary"
+                    size="sm"
+                    icon="i-lucide-bell"
+                    class="rounded-xl font-semibold"
+                    @click="requestNotificationPermission"
+                  >
+                    Attiva notifiche
+                  </UButton>
+                </template>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
           <div class="flex items-start gap-3">
             <span class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl gradient-accent text-white shadow-sm">

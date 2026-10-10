@@ -219,6 +219,7 @@ export type Database = {
           group_name: string | null
           id: number
           reminder_minutes: number | null
+          reminder_at?: string | null
           reminder_sent_at: string | null
           timezone: string | null
           title: string
@@ -233,6 +234,7 @@ export type Database = {
           group_name?: string | null
           id?: number
           reminder_minutes?: number | null
+          reminder_at?: string | null
           reminder_sent_at?: string | null
           timezone?: string | null
           title: string
@@ -247,6 +249,7 @@ export type Database = {
           group_name?: string | null
           id?: number
           reminder_minutes?: number | null
+          reminder_at?: string | null
           reminder_sent_at?: string | null
           timezone?: string | null
           title?: string

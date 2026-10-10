@@ -54,6 +54,12 @@ export default defineNuxtConfig({
     classSuffix: ''
   },
 
+  runtimeConfig: {
+    public: {
+      vapidPublicKey: process.env.NUXT_PUBLIC_VAPID_PUBLIC_KEY || ''
+    }
+  },
+
   modules: ['@nuxtjs/supabase', '@nuxt/ui', '@vite-pwa/nuxt'],
 
   supabase: {
@@ -145,6 +151,7 @@ export default defineNuxtConfig({
       ]
     },
     workbox: {
+      importScripts: ['/push-handler.js'],
       globPatterns: ['**/*.{js,css,ico,png,svg,woff2}'],
       /**
        * Both folders below match the pattern above but must not be precached:

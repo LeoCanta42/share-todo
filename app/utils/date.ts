@@ -191,3 +191,59 @@ export function buildIsoDueAt(dateStr: string, timeStr?: string | null, allDay =
   return localDate.toISOString()
 }
 
+export interface ReminderOption {
+  value: number | null
+  label: string
+}
+
+export const REMINDER_OPTIONS: ReminderOption[] = [
+  { value: null, label: 'Nessun promemoria' },
+  { value: 0, label: 'Al momento della scadenza' },
+  { value: 5, label: '5 minuti prima' },
+  { value: 15, label: '15 minuti prima' },
+  { value: 30, label: '30 minuti prima' },
+  { value: 60, label: '1 ora prima' },
+  { value: 120, label: '2 ore prima' },
+  { value: 1440, label: '1 giorno prima' }
+]
+
+export function reminderLabel(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined) return 'Nessuno'
+  const match = REMINDER_OPTIONS.find(opt => opt.value === minutes)
+  if (match && match.value !== null) return match.label
+  if (minutes < 60) return `${minutes} min prima`
+  if (minutes < 1440) return `${Math.round(minutes / 60)} ore prima`
+  return `${Math.round(minutes / 1440)} gg prima`
+}
+
+export function formatReminderDisplay(todo?: {
+  reminder_at?: string | null
+  reminder_minutes?: number | null
+  due_at?: string | null
+  due_all_day?: boolean
+} | null): string {
+  if (!todo) return 'Nessuno'
+
+  if (todo.reminder_at) {
+    const d = new Date(todo.reminder_at)
+    if (!Number.isNaN(d.getTime())) {
+      const now = new Date()
+      const sameDay = d.toDateString() === now.toDateString()
+      const tomorrow = new Date(now)
+      tomorrow.setDate(tomorrow.getDate() + 1)
+      const isTomorrow = d.toDateString() === tomorrow.toDateString()
+      const timeStr = d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
+
+      if (sameDay) return `Oggi ${timeStr}`
+      if (isTomorrow) return `Domani ${timeStr}`
+      return `${formatShortDate(todo.reminder_at)} ${timeStr}`
+    }
+  }
+
+  if (todo.reminder_minutes !== null && todo.reminder_minutes !== undefined) {
+    return reminderLabel(todo.reminder_minutes)
+  }
+
+  return 'Nessuno'
+}
+

@@ -18,6 +18,7 @@ export interface TodoDueOptions {
   dueAt?: string | null
   dueAllDay?: boolean
   reminderMinutes?: number | null
+  reminderAt?: string | null
   timezone?: string | null
 }
 
