@@ -56,7 +56,7 @@ export default defineNuxtConfig({
 
   runtimeConfig: {
     public: {
-      vapidPublicKey: process.env.NUXT_PUBLIC_VAPID_PUBLIC_KEY || ''
+      vapidPublicKey: process.env.NUXT_PUBLIC_VAPID_PUBLIC_KEY || 'BM9EmQ1uDFTdn6LLHGlgPLyRDZt6pkpWv38o4xjk3tpnBl7f790uhITipDreOXFEVhHqn_d12E-0gOHZDlXneVc'
     }
   },
 
