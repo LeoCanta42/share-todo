@@ -27,15 +27,19 @@ if (!self.__shareTodoPushHandlerRegistered) {
 
     const title = data.title || 'ShareToDo — Promemoria'
     const body = data.body || 'Hai un\'attività in scadenza'
-    const url = (data.data && data.data.url) || data.url || '/'
+    const rawUrl = (data.data && data.data.url) || data.url || '/'
+    const url = new URL(rawUrl, self.location.origin).href
     const icon = data.icon || '/icons/icon-192.png'
+    const badge = data.badge || '/icons/icon-192.png'
     const tag = data.tag || `todo-${Date.now()}`
 
     const options = {
       body,
       icon,
-      badge: icon,
+      badge,
       tag,
+      vibrate: [200, 100, 200],
+      renotify: true,
       data: {
         url,
         ...(data.data || {})
@@ -47,6 +51,8 @@ if (!self.__shareTodoPushHandlerRegistered) {
         console.warn('showNotification retry with minimal options:', err)
         return self.registration.showNotification(title, {
           body,
+          icon,
+          tag,
           data: { url }
         })
       })
@@ -55,13 +61,14 @@ if (!self.__shareTodoPushHandlerRegistered) {
 
   self.addEventListener('notificationclick', (event) => {
     event.notification.close()
-    const targetUrl = (event.notification.data && event.notification.data.url) || '/'
+    const rawUrl = (event.notification.data && event.notification.data.url) || '/'
+    const targetUrl = new URL(rawUrl, self.location.origin).href
 
     event.waitUntil(
       clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
         for (const client of clientList) {
-          if (client.url && 'focus' in client) {
-            if ('navigate' in client) {
+          if ('focus' in client) {
+            if ('navigate' in client && client.url !== targetUrl) {
               client.navigate(targetUrl)
             }
             return client.focus()

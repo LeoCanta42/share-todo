@@ -7,6 +7,7 @@ import { useAuth } from '~/composables/useAuth'
 import { useNotifications } from '~/composables/useNotifications'
 import { MIN_PASSWORD_LENGTH } from '~/utils/password'
 import { DEFAULT_GROUPS, GROUP_ICONS, GROUP_TONES } from '~/utils/groups'
+import { formatDate } from '~/utils/date'
 
 /**
  * Everything the user can tailor: appearance, list behaviour, their own groups
@@ -28,7 +29,18 @@ const { tree, flat, groups, byId, loadGroups, createGroup, renameGroup, setGroup
 const { canInstall, install, needRefresh, updateApp, isIos, offlineReady, isInstalled, manualInstallHint } = usePwa()
 const { changePassword, logout, loading: authLoading } = useAuth()
 const { userEmail } = useCurrentUser()
-const { permission: notificationPermission, requestPermission: requestNotificationPermission } = useNotifications()
+const {
+  permission: notificationPermission,
+  requestPermission: requestNotificationPermission,
+  isIos: notificationIsIos,
+  isStandalone: notificationIsStandalone,
+  isSubscribing: pushSubscribing,
+  isTesting: pushTesting,
+  registeredDevices,
+  sendTestNotification,
+  resubscribePush,
+  loadRegisteredDevices
+} = useNotifications()
 const { ask } = useConfirm()
 const toast = useToast()
 
@@ -89,9 +101,13 @@ async function submitPasswordChange() {
   }
 }
 
-// Never leave a half-typed password behind when the dialog closes.
+// Never leave a half-typed password behind when the dialog closes, and load devices when open.
 watch(() => props.open, (open) => {
-  if (!open) resetPasswordForm()
+  if (open) {
+    loadRegisteredDevices()
+  } else {
+    resetPasswordForm()
+  }
 })
 
 const expandedGroup = ref<string | null>(null)
@@ -740,38 +756,126 @@ async function handleInstall() {
             <div class="min-w-0 flex-1">
               <h3 class="text-sm font-bold text-slate-900 dark:text-white">Notifiche e promemoria</h3>
               <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                Ricevi promemoria prima della scadenza delle tue attività.
+                Ricevi notifiche push per i promemoria delle attività, anche ad app chiusa (Android, iOS e Web).
               </p>
 
-              <div class="mt-3 flex flex-wrap items-center gap-2">
+              <div class="mt-3 space-y-3">
                 <template v-if="notificationPermission === 'granted'">
-                  <span class="inline-flex items-center gap-1.5 rounded-xl bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
-                    <UIcon name="i-lucide-check-circle-2" class="h-3.5 w-3.5" />
-                    Notifiche attive
-                  </span>
-                  <p v-if="isIos" class="w-full text-[11px] text-amber-600 dark:text-amber-400">
-                    Nota iOS: su iPhone/iPad le notifiche ad app chiusa funzionano solo se l'app è stata aggiunta alla Schermata Home (Condividi → Aggiungi a schermata Home).
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="inline-flex items-center gap-1.5 rounded-xl bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
+                      <UIcon name="i-lucide-check-circle-2" class="h-3.5 w-3.5" />
+                      Notifiche attive
+                    </span>
+                    <UButton
+                      color="primary"
+                      variant="soft"
+                      size="xs"
+                      icon="i-lucide-bell-ring"
+                      class="rounded-xl font-medium"
+                      :loading="pushTesting"
+                      :disabled="pushTesting"
+                      @click="sendTestNotification(0)"
+                    >
+                      Invia prova ora
+                    </UButton>
+                    <UButton
+                      color="neutral"
+                      variant="soft"
+                      size="xs"
+                      icon="i-lucide-timer"
+                      class="rounded-xl font-medium"
+                      :loading="pushTesting"
+                      :disabled="pushTesting"
+                      @click="sendTestNotification(10)"
+                    >
+                      Test tra 10s (chiudi l'app)
+                    </UButton>
+                    <UButton
+                      color="neutral"
+                      variant="ghost"
+                      size="xs"
+                      icon="i-lucide-refresh-cw"
+                      class="rounded-xl"
+                      :loading="pushSubscribing"
+                      :disabled="pushSubscribing"
+                      title="Risincronizza questo dispositivo con il server"
+                      @click="resubscribePush"
+                    >
+                      Risincronizza
+                    </UButton>
+                  </div>
+
+                  <!-- Registered devices for this user account -->
+                  <div v-if="registeredDevices.length > 0" class="rounded-xl border border-slate-100 bg-slate-50/80 p-3 dark:border-slate-800/80 dark:bg-slate-900/50">
+                    <p class="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                      Dispositivi registrati per i promemoria ({{ registeredDevices.length }}):
+                    </p>
+                    <ul class="mt-2 space-y-1.5 text-xs text-slate-600 dark:text-slate-400">
+                      <li
+                        v-for="dev in registeredDevices"
+                        :key="dev.id"
+                        class="flex items-center justify-between gap-2"
+                      >
+                        <div class="flex items-center gap-1.5 truncate">
+                          <UIcon name="i-lucide-smartphone" class="h-3.5 w-3.5 flex-shrink-0 text-accent-500" />
+                          <span class="truncate font-medium">{{ dev.platform }}</span>
+                        </div>
+                        <span v-if="dev.lastSeenAt" class="flex-shrink-0 text-[11px] text-slate-400 dark:text-slate-500">
+                          visto {{ formatDate(dev.lastSeenAt) }}
+                        </span>
+                      </li>
+                    </ul>
+                  </div>
+
+                  <p v-if="notificationIsIos" class="text-[11px] text-amber-600 dark:text-amber-400">
+                    Nota iOS: su iPhone e iPad le notifiche push funzionano solo se l'app è stata aggiunta alla Schermata Home (Condividi → Aggiungi a schermata Home).
                   </p>
                 </template>
+
                 <template v-else-if="notificationPermission === 'denied'">
-                  <span class="inline-flex items-center gap-1.5 rounded-xl bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 dark:bg-red-950/50 dark:text-red-300">
-                    <UIcon name="i-lucide-bell-off" class="h-3.5 w-3.5" />
-                    Bloccate dal browser
-                  </span>
-                  <p class="w-full text-[11px] text-slate-400 dark:text-slate-500">
-                    Per abilitarle, consenti le notifiche nelle impostazioni del sito nel tuo browser.
-                  </p>
+                  <div class="space-y-1.5">
+                    <span class="inline-flex items-center gap-1.5 rounded-xl bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 dark:bg-red-950/50 dark:text-red-300">
+                      <UIcon name="i-lucide-bell-off" class="h-3.5 w-3.5" />
+                      Bloccate dal browser
+                    </span>
+                    <p class="text-[11px] text-slate-500 dark:text-slate-400">
+                      Per abilitare i promemoria, apri le impostazioni del browser (o l'icona del lucchetto a sinistra dell'URL) e consenti le Notifiche per questo sito.
+                    </p>
+                  </div>
                 </template>
+
+                <template v-else-if="notificationPermission === 'unsupported'">
+                  <div class="space-y-1.5">
+                    <span class="inline-flex items-center gap-1.5 rounded-xl bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+                      <UIcon name="i-lucide-info" class="h-3.5 w-3.5" />
+                      {{ notificationIsIos && !notificationIsStandalone ? 'Aggiungi a Schermata Home' : 'Notifiche non supportate' }}
+                    </span>
+                    <p v-if="notificationIsIos && !notificationIsStandalone" class="text-xs text-amber-700 dark:text-amber-300">
+                      Apple supporta le notifiche Web Push solo quando l'app è aggiunta alla Home: tocca il tasto Condividi (icona quadrata con freccia) in Safari e seleziona «Aggiungi a schermata Home», poi riapri ShareToDo dalla Home.
+                    </p>
+                    <p v-else class="text-xs text-slate-500 dark:text-slate-400">
+                      Questo browser non supporta l'API Web Push Notifications. Prova con Chrome, Edge o Safari (versione recente).
+                    </p>
+                  </div>
+                </template>
+
                 <template v-else>
-                  <UButton
-                    color="primary"
-                    size="sm"
-                    icon="i-lucide-bell"
-                    class="rounded-xl font-semibold"
-                    @click="requestNotificationPermission"
-                  >
-                    Attiva notifiche
-                  </UButton>
+                  <div>
+                    <UButton
+                      color="primary"
+                      size="sm"
+                      icon="i-lucide-bell"
+                      class="rounded-xl font-semibold"
+                      :loading="pushSubscribing"
+                      :disabled="pushSubscribing"
+                      @click="requestNotificationPermission"
+                    >
+                      Attiva notifiche
+                    </UButton>
+                    <p class="mt-2 text-[11px] text-slate-400 dark:text-slate-500">
+                      Richiederà il permesso al browser e collegherà il tuo dispositivo ai promemoria.
+                    </p>
+                  </div>
                 </template>
               </div>
             </div>

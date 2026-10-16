@@ -8,6 +8,7 @@ import { usePreferences, TEXT_SIZES } from '~/composables/usePreferences'
 import { useWebShare } from '~/composables/useWebShare'
 import { useShares } from '~/composables/useShares'
 import { useCurrentUser } from '~/composables/useCurrentUser'
+import { useNotifications } from '~/composables/useNotifications'
 
 /**
  * Reading and editing view for a single activity.
@@ -45,6 +46,7 @@ const { prefs, update } = usePreferences()
 const { userId } = useCurrentUser()
 const { permissionFor } = useShares()
 const { canShare, share } = useWebShare()
+const { permission: notificationPermission, requestPermission: requestNotificationPermission } = useNotifications()
 
 const isEditing = ref(false)
 const draftTitle = ref('')
@@ -107,18 +109,24 @@ function startEditing() {
     draftDueAllDay.value = true
   }
 
-  // Load reminder state
-  if (props.todo.reminder_at) {
+  // Load reminder state: preserve relative if due_at and standard reminder_minutes match
+  if (props.todo.due_at && props.todo.reminder_minutes !== null && props.todo.reminder_minutes !== undefined && REMINDER_OPTIONS.some(o => o.value === props.todo.reminder_minutes)) {
+    reminderMode.value = 'relative'
+    draftReminderMinutes.value = props.todo.reminder_minutes
+    if (props.todo.reminder_at) {
+      const rDate = new Date(props.todo.reminder_at)
+      draftReminderDate.value = toInputDate(rDate)
+      draftReminderTime.value = toInputTime(rDate)
+    } else {
+      draftReminderDate.value = ''
+      draftReminderTime.value = '09:00'
+    }
+  } else if (props.todo.reminder_at) {
     reminderMode.value = 'custom'
     const rDate = new Date(props.todo.reminder_at)
     draftReminderDate.value = toInputDate(rDate)
     draftReminderTime.value = toInputTime(rDate)
     draftReminderMinutes.value = props.todo.reminder_minutes ?? null
-  } else if (props.todo.reminder_minutes !== null && props.todo.due_at) {
-    reminderMode.value = 'relative'
-    draftReminderMinutes.value = props.todo.reminder_minutes
-    draftReminderDate.value = ''
-    draftReminderTime.value = '09:00'
   } else {
     reminderMode.value = 'none'
     draftReminderMinutes.value = null
@@ -569,6 +577,26 @@ watch([() => draftTitle.value, () => isEditing.value], () => {
                   type="time"
                   class="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 focus:border-accent-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                 >
+              </div>
+            </div>
+
+            <!-- Tip if notifications are not enabled on this device -->
+            <div
+              v-if="reminderMode !== 'none' && notificationPermission !== 'granted'"
+              class="rounded-xl border border-amber-200/80 bg-amber-50/90 p-2.5 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-1.5 min-w-0">
+                  <UIcon name="i-lucide-bell-off" class="h-4 w-4 flex-shrink-0 text-amber-600 dark:text-amber-400" />
+                  <span class="truncate">Attiva le notifiche per ricevere il promemoria</span>
+                </div>
+                <button
+                  type="button"
+                  class="flex-shrink-0 rounded-lg bg-amber-200/90 px-2 py-0.5 font-semibold text-amber-950 hover:bg-amber-300 dark:bg-amber-900/80 dark:text-amber-100"
+                  @click="requestNotificationPermission"
+                >
+                  Attiva
+                </button>
               </div>
             </div>
           </div>

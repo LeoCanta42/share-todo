@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useGroups } from '~/composables/useGroups'
+import { useNotifications } from '~/composables/useNotifications'
 import { MAX_GROUP_DEPTH } from '~/utils/groupTree'
 import { groupMetaOf } from '~/utils/groups'
 import { buildIsoDueAt, dueLabel, toInputDate, toInputTime, REMINDER_OPTIONS, reminderLabel, formatShortDate } from '~/utils/date'
@@ -42,6 +43,7 @@ const isFocused = ref(false)
 const inputRef = ref<HTMLTextAreaElement | null>(null)
 const pickerRef = ref<HTMLElement | null>(null)
 const duePickerRef = ref<HTMLElement | null>(null)
+const { permission: notificationPermission, requestPermission: requestNotificationPermission } = useNotifications()
 
 // Due date and reminder state
 const dueDate = ref('')
@@ -650,6 +652,26 @@ onBeforeUnmount(() => {
                       class="w-full rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs text-slate-800 focus:border-accent-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                     >
                   </div>
+                </div>
+              </div>
+
+              <!-- Tip if notifications are not enabled on this device -->
+              <div
+                v-if="reminderMode !== 'none' && notificationPermission !== 'granted'"
+                class="rounded-xl border border-amber-200/80 bg-amber-50/90 p-2.5 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200"
+              >
+                <div class="flex items-center justify-between gap-2">
+                  <div class="flex items-center gap-1.5 min-w-0">
+                    <UIcon name="i-lucide-bell-off" class="h-4 w-4 flex-shrink-0 text-amber-600 dark:text-amber-400" />
+                    <span class="truncate">Attiva le notifiche per ricevere il promemoria</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="flex-shrink-0 rounded-lg bg-amber-200/90 px-2 py-0.5 font-semibold text-amber-950 hover:bg-amber-300 dark:bg-amber-900/80 dark:text-amber-100"
+                    @click="requestNotificationPermission"
+                  >
+                    Attiva
+                  </button>
                 </div>
               </div>
             </div>
