@@ -1,14 +1,6 @@
 import type { Database } from '~/types/database.types'
 import type { NoteWithGroup } from '~/types/note'
 import { useShares } from '~/composables/useShares'
-import { useGroups } from '~/composables/useGroups'
-import {
-  getCachedNotes,
-  setCachedNotes,
-  putCachedNote,
-  removeCachedNote
-} from '~/utils/offlineDb'
-import { useSyncEngine, isNetworkError } from '~/composables/useSyncEngine'
 
 export interface NoteStats {
   total: number
@@ -30,8 +22,6 @@ export function useNotes() {
   const supabase = useSupabaseClient<Database>()
   const { userId } = useCurrentUser()
   const { permissionFor } = useShares()
-  const { groupsById } = useGroups()
-  const { isOnline, enqueue, cancelPendingForEntity } = useSyncEngine()
   const toast = useToast()
 
   const notes = useState<NoteWithGroup[]>('notes-list', () => [])
@@ -40,23 +30,6 @@ export function useNotes() {
   const activeActionId = useState<number | null>('notes-active-id', () => null)
 
   async function loadNotes() {
-    // Immediate populate from local IndexedDB cache if state is currently empty
-    if (import.meta.client && notes.value.length === 0) {
-      try {
-        const cached = await getCachedNotes()
-        if (cached && cached.length > 0 && notes.value.length === 0) {
-          notes.value = cached
-        }
-      } catch (err) {
-        console.warn('Failed to load cached notes:', err)
-      }
-    }
-
-    if (!isOnline.value) {
-      loading.value = false
-      return
-    }
-
     loading.value = true
     try {
       // The embedded group is what the rows display and what permissions are
@@ -71,29 +44,18 @@ export function useNotes() {
         }
 
       if (error) {
-        if (!isNetworkError(error)) {
-          console.error('Error fetching notes:', error)
-          toast.add({
-            title: 'Errore nel caricamento',
-            description: error.message || 'Impossibile caricare le note',
-            color: 'error'
-          })
-        }
+        console.error('Error fetching notes:', error)
+        toast.add({
+          title: 'Errore nel caricamento',
+          description: error.message || 'Impossibile caricare le note',
+          color: 'error'
+        })
         return
       }
 
-      // Preserve local un-synced negative ID items that are still in memory
-      const pendingLocal = notes.value.filter(n => n.id < 0)
-      const fetched = data ?? []
-      notes.value = [...pendingLocal, ...fetched.filter(f => !pendingLocal.some(p => p.id === f.id))]
-
-      if (import.meta.client) {
-        await setCachedNotes(notes.value)
-      }
+      notes.value = data ?? []
     } catch (err: unknown) {
-      if (!isNetworkError(err)) {
-        console.error('Unexpected error loading notes:', err)
-      }
+      console.error('Unexpected error loading notes:', err)
     } finally {
       loading.value = false
     }
@@ -141,36 +103,6 @@ export function useNotes() {
         payload.user_id = userId.value
       }
 
-      // Offline creation: immediate local store & sync queue
-      if (!isOnline.value) {
-        const tempId = -1 * (Date.now() + Math.floor(Math.random() * 1000))
-        const matchedGroup = groupId ? (groupsById.value.get(groupId) ?? null) : null
-        const offlineNote: NoteWithGroup = {
-          id: tempId,
-          title,
-          body: rawBody,
-          group_id: groupId,
-          group: matchedGroup,
-          group_name: matchedGroup?.name ?? 'Generale',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          user_id: payload.user_id ?? null
-        }
-
-        notes.value = [offlineNote, ...notes.value]
-        if (import.meta.client) {
-          await putCachedNote(offlineNote)
-          await enqueue('create_note', 'note', tempId, payload)
-        }
-
-        toast.add({
-          title: 'Nota creata (offline)',
-          description: `"${title}" salvata in locale, verrà sincronizzata appena online.`,
-          color: 'neutral'
-        })
-        return true
-      }
-
       const { data, error } = await supabase
         .from('notes')
         .insert(payload)
@@ -181,35 +113,6 @@ export function useNotes() {
         }
 
       if (error) {
-        if (isNetworkError(error)) {
-          const tempId = -1 * (Date.now() + Math.floor(Math.random() * 1000))
-          const matchedGroup = groupId ? (groupsById.value.get(groupId) ?? null) : null
-          const offlineNote: NoteWithGroup = {
-            id: tempId,
-            title,
-            body: rawBody,
-            group_id: groupId,
-            group: matchedGroup,
-            group_name: matchedGroup?.name ?? 'Generale',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            user_id: payload.user_id ?? null
-          }
-
-          notes.value = [offlineNote, ...notes.value]
-          if (import.meta.client) {
-            await putCachedNote(offlineNote)
-            await enqueue('create_note', 'note', tempId, payload)
-          }
-
-          toast.add({
-            title: 'Salvata in locale (offline)',
-            description: `"${title}" salvata in locale: verrà sincronizzata appena online.`,
-            color: 'neutral'
-          })
-          return true
-        }
-
         toast.add({
           title: 'Errore inserimento',
           description: error.message,
@@ -220,9 +123,6 @@ export function useNotes() {
 
       if (data) {
         notes.value = [data, ...notes.value.filter(note => note.id !== data.id)]
-        if (import.meta.client) {
-          await putCachedNote(data)
-        }
       } else {
         await loadNotes()
       }
@@ -234,39 +134,6 @@ export function useNotes() {
       })
       return true
     } catch (err: unknown) {
-      if (isNetworkError(err)) {
-        const tempId = -1 * (Date.now() + Math.floor(Math.random() * 1000))
-        const matchedGroup = groupId ? (groupsById.value.get(groupId) ?? null) : null
-        const offlineNote: NoteWithGroup = {
-          id: tempId,
-          title,
-          body: rawBody,
-          group_id: groupId,
-          group: matchedGroup,
-          group_name: matchedGroup?.name ?? 'Generale',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          user_id: userId.value
-        }
-
-        notes.value = [offlineNote, ...notes.value]
-        if (import.meta.client) {
-          await putCachedNote(offlineNote)
-          await enqueue('create_note', 'note', tempId, {
-            title,
-            body: rawBody,
-            group_id: groupId,
-            user_id: userId.value
-          })
-        }
-
-        toast.add({
-          title: 'Salvata in locale (offline)',
-          description: `"${title}" salvata in locale: verrà sincronizzata appena online.`,
-          color: 'neutral'
-        })
-        return true
-      }
       console.error('Error adding note:', err)
       return false
     } finally {
@@ -299,16 +166,6 @@ export function useNotes() {
     if (Object.keys(payload).length === 0) return true
 
     patch(id, payload as Partial<NoteWithGroup>)
-    const updated = { ...snapshot, ...payload }
-    if (import.meta.client) {
-      await putCachedNote(updated)
-    }
-
-    if (!isOnline.value || id < 0) {
-      await enqueue('update_note', 'note', id, payload)
-      toast.add({ title: 'Nota aggiornata (offline)', color: 'neutral' })
-      return true
-    }
 
     activeActionId.value = id
     try {
@@ -322,13 +179,7 @@ export function useNotes() {
         }
 
       if (error) {
-        if (isNetworkError(error)) {
-          await enqueue('update_note', 'note', id, payload)
-          toast.add({ title: 'Nota aggiornata (offline)', color: 'neutral' })
-          return true
-        }
         restore(id, snapshot)
-        if (import.meta.client) await putCachedNote(snapshot)
         toast.add({
           title: 'Errore modifica',
           description: error.message,
@@ -339,25 +190,17 @@ export function useNotes() {
 
       if (!data || data.length === 0) {
         restore(id, snapshot)
-        if (import.meta.client) await putCachedNote(snapshot)
         notPermitted('Modifica non salvata')
         return false
       }
 
       // The database derives the mirrored name, so take the row it returned.
       patch(id, data[0]!)
-      if (import.meta.client) await putCachedNote(data[0]!)
       toast.add({ title: 'Nota aggiornata', color: 'success' })
       return true
     } catch (err: unknown) {
-      if (isNetworkError(err)) {
-        await enqueue('update_note', 'note', id, payload)
-        toast.add({ title: 'Nota aggiornata (offline)', color: 'neutral' })
-        return true
-      }
       console.error('Error updating note:', err)
       restore(id, snapshot)
-      if (import.meta.client) await putCachedNote(snapshot)
       return false
     } finally {
       activeActionId.value = null
@@ -370,31 +213,6 @@ export function useNotes() {
 
     activeActionId.value = id
     notes.value = notes.value.filter(note => note.id !== id)
-    if (import.meta.client) {
-      await removeCachedNote(id)
-    }
-
-    if (id < 0) {
-      await cancelPendingForEntity(id)
-      activeActionId.value = null
-      toast.add({
-        title: 'Nota eliminata',
-        description: target ? `"${target.title}" è stata rimossa` : undefined,
-        color: 'neutral'
-      })
-      return true
-    }
-
-    if (!isOnline.value) {
-      await enqueue('delete_note', 'note', id, { id })
-      activeActionId.value = null
-      toast.add({
-        title: 'Nota eliminata (offline)',
-        description: target ? `"${target.title}" rimossa localmente` : undefined,
-        color: 'neutral'
-      })
-      return true
-    }
 
     try {
       const { data, error } = await supabase
@@ -404,12 +222,7 @@ export function useNotes() {
         .select('id')
 
       if (error) {
-        if (isNetworkError(error)) {
-          await enqueue('delete_note', 'note', id, { id })
-          return true
-        }
         notes.value = snapshot
-        if (import.meta.client) await setCachedNotes(snapshot)
         toast.add({
           title: 'Errore eliminazione',
           description: error.message,
@@ -420,7 +233,6 @@ export function useNotes() {
 
       if (!data || data.length === 0) {
         notes.value = snapshot
-        if (import.meta.client) await setCachedNotes(snapshot)
         notPermitted('Eliminazione non eseguita')
         return false
       }
@@ -432,12 +244,7 @@ export function useNotes() {
       })
       return true
     } catch (err: unknown) {
-      if (isNetworkError(err)) {
-        await enqueue('delete_note', 'note', id, { id })
-        return true
-      }
       notes.value = snapshot
-      if (import.meta.client) await setCachedNotes(snapshot)
       console.error('Error deleting note:', err)
       return false
     } finally {

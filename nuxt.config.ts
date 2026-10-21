@@ -161,7 +161,8 @@ export default defineNuxtConfig({
        *   the next launch, so precaching all 24 would only slow the first visit.
        */
       globIgnores: ['**/screenshots/**', '**/splash/**'],
-      navigateFallback: null,
+      navigateFallback: '/',
+      navigateFallbackDenylist: [/^\/api/],
       cleanupOutdatedCaches: true,
       runtimeCaching: [
         {
@@ -175,10 +176,10 @@ export default defineNuxtConfig({
           handler: 'NetworkFirst',
           options: {
             cacheName: 'pages',
-            networkTimeoutSeconds: 3,
+            networkTimeoutSeconds: 5,
             expiration: {
               maxEntries: 20,
-              maxAgeSeconds: 60 * 60 * 24 * 30
+              maxAgeSeconds: 60 * 60 * 24
             }
           }
         },

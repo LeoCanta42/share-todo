@@ -1,10 +1,10 @@
 import type { Database } from '~/types/database.types'
 import { MIN_PASSWORD_LENGTH } from '~/utils/password'
-import { clearAllLocalData } from '~/utils/offlineDb'
 
 export function useAuth() {
   const supabase = useSupabaseClient<Database>()
-  const { user, userEmail, markLoggedOut, markLoggedIn } = useCurrentUser()
+  const user = useSupabaseUser()
+  const { userEmail } = useCurrentUser()
   const toast = useToast()
 
   const loading = ref(false)
@@ -12,7 +12,7 @@ export function useAuth() {
   async function loginWithEmail(email: string, password: string): Promise<boolean> {
     loading.value = true
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      const { error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password
       })
@@ -24,10 +24,6 @@ export function useAuth() {
           color: 'error'
         })
         return false
-      }
-
-      if (data?.user) {
-        markLoggedIn(data.user)
       }
 
       toast.add({
@@ -61,8 +57,7 @@ export function useAuth() {
         return false
       }
 
-      if (data.session && data.user) {
-        markLoggedIn(data.user)
+      if (data.session) {
         toast.add({
           title: 'Account creato!',
           description: 'Accesso effettuato con successo.',
@@ -165,10 +160,6 @@ export function useAuth() {
   async function logout() {
     loading.value = true
     try {
-      markLoggedOut()
-      if (import.meta.client) {
-        await clearAllLocalData()
-      }
       const { error } = await supabase.auth.signOut()
       if (error) {
         toast.add({

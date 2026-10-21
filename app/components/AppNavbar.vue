@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { useAppearance } from '~/composables/useAppearance'
 import { usePwa } from '~/composables/usePwa'
-import { useSyncEngine } from '~/composables/useSyncEngine'
 
 const props = defineProps<{
   user?: { email?: string } | null
@@ -16,7 +15,6 @@ const emit = defineEmits<{
 
 const { setTheme, isDark } = useAppearance()
 const { canInstall, isInstalled, needRefresh, install, updateApp } = usePwa()
-const { isOnline } = useSyncEngine()
 
 const route = useRoute()
 
@@ -138,18 +136,6 @@ const collaborators = computed(() => props.collaboratorsCount ?? 0)
         >
           <span class="hidden sm:inline">Installa</span>
         </UButton>
-
-        <!-- Offline status pill in navbar -->
-        <ClientOnly>
-          <div
-            v-if="!isOnline"
-            class="flex items-center gap-1.5 rounded-xl bg-amber-500/15 px-2.5 py-1 text-xs font-semibold text-amber-700 dark:text-amber-300"
-            title="Sei offline. Le modifiche vengono salvate in locale"
-          >
-            <UIcon name="i-lucide-wifi-off" class="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
-            <span class="hidden sm:inline">Offline</span>
-          </div>
-        </ClientOnly>
 
         <!-- Theme Toggle -->
         <ClientOnly>

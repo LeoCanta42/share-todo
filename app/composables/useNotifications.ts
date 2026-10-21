@@ -126,9 +126,6 @@ export function useNotifications() {
     if (!import.meta.client || !('serviceWorker' in navigator)) {
       return { ok: false, reason: 'Questo browser non supporta i service worker.' }
     }
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
-      return { ok: false, reason: 'Dispositivo offline.' }
-    }
     if (!userId.value) {
       return { ok: false, reason: 'Devi effettuare l\'accesso per registrare le notifiche.' }
     }
@@ -408,7 +405,7 @@ export function useNotifications() {
   }
 
   async function loadRegisteredDevices(): Promise<RegisteredPushDevice[]> {
-    if (!import.meta.client || !userId.value || (typeof navigator !== 'undefined' && !navigator.onLine)) return []
+    if (!import.meta.client || !userId.value) return []
     try {
       const { data, error } = await supabase
         .from('push_subscriptions')
