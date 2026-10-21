@@ -1,7 +1,12 @@
 import type { Database } from '~/types/database.types'
 import type { ApprovalStatus, Profile } from '~/types/profile'
-import { getCachedProfile, setCachedProfile } from '~/utils/offlineDb'
-import { isNetworkError } from '~/composables/useSyncEngine'
+import {
+  getCachedProfile,
+  setCachedProfile,
+  getStoredLocalProfile,
+  setStoredLocalProfile
+} from '~/utils/offlineDb'
+import { isNetworkError, useSyncEngine } from '~/composables/useSyncEngine'
 
 /**
  * The signed-in user's own profile: the two flags that decide whether the app is
@@ -14,11 +19,22 @@ import { isNetworkError } from '~/composables/useSyncEngine'
 export function useProfile() {
   const supabase = useSupabaseClient<Database>()
   const { userId } = useCurrentUser()
+  const { isOnline } = useSyncEngine()
 
-  const profile = useState<Profile | null>('me-profile', () => null)
+  const profile = useState<Profile | null>('me-profile', () => {
+    if (import.meta.client) {
+      return getStoredLocalProfile()
+    }
+    return null
+  })
   const loading = useState<boolean>('me-profile-loading', () => false)
-  /** True once a fetch has settled, so callers can tell "pending" from "not asked yet". */
-  const loaded = useState<boolean>('me-profile-loaded', () => false)
+  /** True once a fetch or local load has settled, so callers can tell "pending" from "not asked yet". */
+  const loaded = useState<boolean>('me-profile-loaded', () => {
+    if (import.meta.client) {
+      return Boolean(getStoredLocalProfile())
+    }
+    return false
+  })
 
   const isAdmin = computed(() => Boolean(profile.value?.is_admin))
 
@@ -42,17 +58,36 @@ export function useProfile() {
       return
     }
 
-    // Populate from local IndexedDB cache first
-    if (import.meta.client && !profile.value) {
-      try {
-        const cached = await getCachedProfile()
-        if (cached && cached.id === id) {
-          profile.value = cached
+    // Populate from local storage / IndexedDB cache first
+    if (import.meta.client) {
+      if (!profile.value) {
+        const local = getStoredLocalProfile()
+        if (local && local.id === id) {
+          profile.value = local
           loaded.value = true
         }
-      } catch (err) {
-        console.warn('Failed to load cached profile:', err)
       }
+      if (!profile.value) {
+        try {
+          const cached = await getCachedProfile()
+          if (cached && cached.id === id) {
+            profile.value = cached
+            setStoredLocalProfile(cached)
+            loaded.value = true
+          }
+        } catch (err) {
+          console.warn('Failed to load cached profile:', err)
+        }
+      }
+    }
+
+    // When offline, do not attempt to contact the network — the local profile is sufficient
+    if (!isOnline.value) {
+      loading.value = false
+      if (profile.value) {
+        loaded.value = true
+      }
+      return
     }
 
     loading.value = true
@@ -73,6 +108,7 @@ export function useProfile() {
       } else {
         profile.value = data ?? null
         if (import.meta.client) {
+          setStoredLocalProfile(profile.value)
           await setCachedProfile(profile.value)
         }
       }
@@ -96,6 +132,7 @@ export function useProfile() {
     profile.value = null
     loaded.value = false
     if (import.meta.client) {
+      setStoredLocalProfile(null)
       setCachedProfile(null)
     }
   }

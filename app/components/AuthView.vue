@@ -52,6 +52,10 @@ function validate(): boolean {
 }
 
 async function handleSubmit() {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    formError.value = 'Sei offline. Per accedere o registrarsi è necessaria una connessione Internet.'
+    return
+  }
   if (loading.value || !validate()) return
 
   const success = isSignup.value

@@ -2,7 +2,7 @@ import type { Database } from '~/types/database.types'
 import type { TodoPermission, TodoShare } from '~/types/todo'
 import { useGroups } from '~/composables/useGroups'
 import { getCachedShares, setCachedShares } from '~/utils/offlineDb'
-import { isNetworkError } from '~/composables/useSyncEngine'
+import { isNetworkError, useSyncEngine } from '~/composables/useSyncEngine'
 
 /**
  * The only fields the grant lookup needs. Both a todo and a note satisfy it, which
@@ -20,6 +20,7 @@ export function useShares() {
   const supabase = useSupabaseClient<Database>()
   const { userId, userEmail } = useCurrentUser()
   const { groupsById, namePath } = useGroups()
+  const { isOnline } = useSyncEngine()
   const toast = useToast()
 
   const myShares = useState<TodoShare[]>('todo-my-shares', () => [])
@@ -42,6 +43,11 @@ export function useShares() {
       } catch (err) {
         console.warn('Failed to load cached shares:', err)
       }
+    }
+
+    if (!isOnline.value) {
+      loading.value = false
+      return
     }
 
     loading.value = true

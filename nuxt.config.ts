@@ -152,7 +152,7 @@ export default defineNuxtConfig({
     },
     workbox: {
       importScripts: ['/push-handler.js'],
-      globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+      globPatterns: ['**/*.{js,css,ico,png,svg,woff2}'],
       /**
        * Both folders below match the pattern above but must not be precached:
        * - `/screenshots` are install-sheet artwork for the Android prompt (~680 KB),
@@ -161,8 +161,7 @@ export default defineNuxtConfig({
        *   the next launch, so precaching all 24 would only slow the first visit.
        */
       globIgnores: ['**/screenshots/**', '**/splash/**'],
-      navigateFallback: '/',
-      navigateFallbackDenylist: [/^\/api/],
+      navigateFallback: null,
       cleanupOutdatedCaches: true,
       runtimeCaching: [
         {
@@ -176,10 +175,10 @@ export default defineNuxtConfig({
           handler: 'NetworkFirst',
           options: {
             cacheName: 'pages',
-            networkTimeoutSeconds: 5,
+            networkTimeoutSeconds: 3,
             expiration: {
               maxEntries: 20,
-              maxAgeSeconds: 60 * 60 * 24
+              maxAgeSeconds: 60 * 60 * 24 * 30
             }
           }
         },
@@ -208,12 +207,6 @@ export default defineNuxtConfig({
       ]
     },
     includeAssets: ['favicon.ico', 'favicon.svg', 'robots.txt', 'icons/*.png']
-  },
-
-  nitro: {
-    prerender: {
-      routes: ['/']
-    }
   },
 
   hooks: {

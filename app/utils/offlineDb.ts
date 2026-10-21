@@ -497,7 +497,76 @@ export async function setLastSyncTime(timestamp: number): Promise<void> {
   }
 }
 
+export interface CachedSessionUser {
+  id: string
+  sub: string
+  email: string
+  role?: string
+  aud?: string
+  user_metadata?: Record<string, any>
+  app_metadata?: Record<string, any>
+  exp?: number
+  [key: string]: any
+}
+
+const LOCAL_STORAGE_USER_KEY = 'sharetodo_session_user'
+const LOCAL_STORAGE_PROFILE_KEY = 'sharetodo_session_profile'
+
+export function getStoredLocalUser(): CachedSessionUser | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null
+  try {
+    const raw = window.localStorage.getItem(LOCAL_STORAGE_USER_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch (err) {
+    console.warn('[offlineDb] getStoredLocalUser error:', err)
+    return null
+  }
+}
+
+export function setStoredLocalUser(user: CachedSessionUser | null): void {
+  if (typeof window === 'undefined' || !window.localStorage) return
+  try {
+    if (user) {
+      window.localStorage.setItem(LOCAL_STORAGE_USER_KEY, JSON.stringify(user))
+    } else {
+      window.localStorage.removeItem(LOCAL_STORAGE_USER_KEY)
+    }
+  } catch (err) {
+    console.warn('[offlineDb] setStoredLocalUser error:', err)
+  }
+}
+
+export function getStoredLocalProfile(): Profile | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null
+  try {
+    const raw = window.localStorage.getItem(LOCAL_STORAGE_PROFILE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch (err) {
+    console.warn('[offlineDb] getStoredLocalProfile error:', err)
+    return null
+  }
+}
+
+export function setStoredLocalProfile(profile: Profile | null): void {
+  if (typeof window === 'undefined' || !window.localStorage) return
+  try {
+    if (profile) {
+      window.localStorage.setItem(LOCAL_STORAGE_PROFILE_KEY, JSON.stringify(profile))
+    } else {
+      window.localStorage.removeItem(LOCAL_STORAGE_PROFILE_KEY)
+    }
+  } catch (err) {
+    console.warn('[offlineDb] setStoredLocalProfile error:', err)
+  }
+}
+
 export async function clearAllLocalData(): Promise<void> {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      window.localStorage.removeItem(LOCAL_STORAGE_USER_KEY)
+      window.localStorage.removeItem(LOCAL_STORAGE_PROFILE_KEY)
+    } catch {}
+  }
   try {
     const db = await openOfflineDatabase()
     const stores = ['todos', 'groups', 'notes', 'shares', 'profile', 'sync_queue', 'meta']

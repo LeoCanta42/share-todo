@@ -4,8 +4,7 @@ import { clearAllLocalData } from '~/utils/offlineDb'
 
 export function useAuth() {
   const supabase = useSupabaseClient<Database>()
-  const user = useSupabaseUser()
-  const { userEmail } = useCurrentUser()
+  const { user, userEmail, markLoggedOut, markLoggedIn } = useCurrentUser()
   const toast = useToast()
 
   const loading = ref(false)
@@ -13,7 +12,7 @@ export function useAuth() {
   async function loginWithEmail(email: string, password: string): Promise<boolean> {
     loading.value = true
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password
       })
@@ -25,6 +24,10 @@ export function useAuth() {
           color: 'error'
         })
         return false
+      }
+
+      if (data?.user) {
+        markLoggedIn(data.user)
       }
 
       toast.add({
@@ -58,7 +61,8 @@ export function useAuth() {
         return false
       }
 
-      if (data.session) {
+      if (data.session && data.user) {
+        markLoggedIn(data.user)
         toast.add({
           title: 'Account creato!',
           description: 'Accesso effettuato con successo.',
@@ -161,6 +165,7 @@ export function useAuth() {
   async function logout() {
     loading.value = true
     try {
+      markLoggedOut()
       if (import.meta.client) {
         await clearAllLocalData()
       }
