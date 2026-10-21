@@ -42,6 +42,7 @@ const {
   loadRegisteredDevices
 } = useNotifications()
 const { ask } = useConfirm()
+const { isOnline, isSyncing, pendingCount, lastSyncTime, sync } = useSyncEngine()
 const toast = useToast()
 
 async function handleLogout() {
@@ -877,6 +878,71 @@ async function handleInstall() {
                     </p>
                   </div>
                 </template>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Memoria locale e Sincronizzazione -->
+        <div class="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
+          <div class="flex items-start gap-3">
+            <span
+              class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl"
+              :class="isOnline ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/50 dark:text-emerald-400' : 'bg-amber-50 text-amber-600 dark:bg-amber-950/50 dark:text-amber-400'"
+            >
+              <UIcon :name="isOnline ? 'i-lucide-wifi' : 'i-lucide-wifi-off'" class="h-5 w-5" />
+            </span>
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center justify-between gap-2">
+                <h3 class="text-sm font-bold text-slate-900 dark:text-white">Memoria locale e sincronizzazione</h3>
+                <span
+                  class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold"
+                  :class="isOnline
+                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                    : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'"
+                >
+                  <span class="h-1.5 w-1.5 rounded-full" :class="isOnline ? 'bg-emerald-500' : 'bg-amber-500'" />
+                  {{ isOnline ? 'Online' : 'Offline' }}
+                </span>
+              </div>
+              <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                I dati e le modifiche vengono memorizzati sul tuo dispositivo (IndexedDB). Quando torni online, ogni modifica in attesa viene inviata automaticamente al server Supabase.
+              </p>
+
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                <span
+                  v-if="pendingCount > 0"
+                  class="inline-flex items-center gap-1.5 rounded-xl bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-800 dark:bg-amber-950/50 dark:text-amber-300"
+                >
+                  <UIcon name="i-lucide-clock" class="h-3.5 w-3.5" />
+                  {{ pendingCount }} {{ pendingCount === 1 ? 'modifica in attesa' : 'modifiche in attesa' }}
+                </span>
+                <span
+                  v-else
+                  class="inline-flex items-center gap-1.5 rounded-xl bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                >
+                  <UIcon name="i-lucide-check-circle" class="h-3.5 w-3.5 text-emerald-500" />
+                  Dati sincronizzati
+                </span>
+
+                <span v-if="lastSyncTime" class="text-[11px] text-slate-400 dark:text-slate-500">
+                  Ultima sincronizzazione: {{ formatDate(new Date(lastSyncTime).toISOString()) }}
+                </span>
+
+                <div class="w-full mt-1">
+                  <UButton
+                    color="primary"
+                    variant="soft"
+                    size="xs"
+                    icon="i-lucide-refresh-cw"
+                    class="rounded-xl font-medium"
+                    :loading="isSyncing"
+                    :disabled="!isOnline || isSyncing"
+                    @click="sync()"
+                  >
+                    {{ isSyncing ? 'Sincronizzazione in corso...' : 'Sincronizza ora' }}
+                  </UButton>
+                </div>
               </div>
             </div>
           </div>

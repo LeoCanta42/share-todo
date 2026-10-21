@@ -1,5 +1,7 @@
 import type { Database } from '~/types/database.types'
 import type { ApprovalStatus, Profile } from '~/types/profile'
+import { getCachedProfile, setCachedProfile } from '~/utils/offlineDb'
+import { isNetworkError } from '~/composables/useSyncEngine'
 
 /**
  * The signed-in user's own profile: the two flags that decide whether the app is
@@ -40,6 +42,19 @@ export function useProfile() {
       return
     }
 
+    // Populate from local IndexedDB cache first
+    if (import.meta.client && !profile.value) {
+      try {
+        const cached = await getCachedProfile()
+        if (cached && cached.id === id) {
+          profile.value = cached
+          loaded.value = true
+        }
+      } catch (err) {
+        console.warn('Failed to load cached profile:', err)
+      }
+    }
+
     loading.value = true
     try {
       const { data, error } = await supabase
@@ -49,14 +64,23 @@ export function useProfile() {
         .maybeSingle()
 
       if (error) {
-        console.error('Error loading profile:', error)
-        profile.value = null
+        if (!isNetworkError(error)) {
+          console.error('Error loading profile:', error)
+          if (!profile.value) {
+            profile.value = null
+          }
+        }
       } else {
         profile.value = data ?? null
+        if (import.meta.client) {
+          await setCachedProfile(profile.value)
+        }
       }
       loaded.value = true
     } catch (err: unknown) {
-      console.error('Unexpected error loading profile:', err)
+      if (!isNetworkError(err)) {
+        console.error('Unexpected error loading profile:', err)
+      }
       loaded.value = true
     } finally {
       loading.value = false
@@ -71,6 +95,9 @@ export function useProfile() {
   function resetProfile() {
     profile.value = null
     loaded.value = false
+    if (import.meta.client) {
+      setCachedProfile(null)
+    }
   }
 
   return {

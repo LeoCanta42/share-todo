@@ -152,7 +152,7 @@ export default defineNuxtConfig({
     },
     workbox: {
       importScripts: ['/push-handler.js'],
-      globPatterns: ['**/*.{js,css,ico,png,svg,woff2}'],
+      globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
       /**
        * Both folders below match the pattern above but must not be precached:
        * - `/screenshots` are install-sheet artwork for the Android prompt (~680 KB),
@@ -208,6 +208,12 @@ export default defineNuxtConfig({
       ]
     },
     includeAssets: ['favicon.ico', 'favicon.svg', 'robots.txt', 'icons/*.png']
+  },
+
+  nitro: {
+    prerender: {
+      routes: ['/']
+    }
   },
 
   hooks: {

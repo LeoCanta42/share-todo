@@ -1,6 +1,8 @@
 import type { Database } from '~/types/database.types'
 import type { TodoPermission, TodoShare } from '~/types/todo'
 import { useGroups } from '~/composables/useGroups'
+import { getCachedShares, setCachedShares } from '~/utils/offlineDb'
+import { isNetworkError } from '~/composables/useSyncEngine'
 
 /**
  * The only fields the grant lookup needs. Both a todo and a note satisfy it, which
@@ -29,6 +31,19 @@ export function useShares() {
     const id = userId.value
     if (!id) return
 
+    // Populate from local IndexedDB cache first
+    if (import.meta.client && myShares.value.length === 0 && receivedShares.value.length === 0) {
+      try {
+        const cached = await getCachedShares()
+        if (cached) {
+          if (myShares.value.length === 0) myShares.value = cached.myShares || []
+          if (receivedShares.value.length === 0) receivedShares.value = cached.receivedShares || []
+        }
+      } catch (err) {
+        console.warn('Failed to load cached shares:', err)
+      }
+    }
+
     loading.value = true
     try {
       // Shares received by me. Match on the resolved user id, and fall back to
@@ -55,18 +70,31 @@ export function useShares() {
       ])
 
       if (mine.error) {
-        console.error('Error loading my shares:', mine.error)
+        if (!isNetworkError(mine.error)) {
+          console.error('Error loading my shares:', mine.error)
+        }
       } else {
         myShares.value = mine.data ?? []
       }
 
       if (received.error) {
-        console.error('Error loading received shares:', received.error)
+        if (!isNetworkError(received.error)) {
+          console.error('Error loading received shares:', received.error)
+        }
       } else {
         receivedShares.value = received.data ?? []
       }
+
+      if (import.meta.client) {
+        await setCachedShares({
+          myShares: myShares.value,
+          receivedShares: receivedShares.value
+        })
+      }
     } catch (err: unknown) {
-      console.error('Unexpected error loading shares:', err)
+      if (!isNetworkError(err)) {
+        console.error('Unexpected error loading shares:', err)
+      }
     } finally {
       loading.value = false
     }

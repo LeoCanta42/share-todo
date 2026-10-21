@@ -1,5 +1,6 @@
 import type { Database } from '~/types/database.types'
 import { MIN_PASSWORD_LENGTH } from '~/utils/password'
+import { clearAllLocalData } from '~/utils/offlineDb'
 
 export function useAuth() {
   const supabase = useSupabaseClient<Database>()
@@ -160,6 +161,9 @@ export function useAuth() {
   async function logout() {
     loading.value = true
     try {
+      if (import.meta.client) {
+        await clearAllLocalData()
+      }
       const { error } = await supabase.auth.signOut()
       if (error) {
         toast.add({

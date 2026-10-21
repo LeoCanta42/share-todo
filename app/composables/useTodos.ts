@@ -3,6 +3,13 @@ import type { Todo, TodoFilter, TodoScope, TodoStats, TodoWithGroup, GroupCounts
 import { usePreferences, type SortOrder } from '~/composables/usePreferences'
 import { useGroups } from '~/composables/useGroups'
 import { dueBucket } from '~/utils/date'
+import {
+  getCachedTodos,
+  setCachedTodos,
+  putCachedTodo,
+  removeCachedTodo
+} from '~/utils/offlineDb'
+import { useSyncEngine, isNetworkError } from '~/composables/useSyncEngine'
 
 export interface TodoSection {
   /** Group id, or '' for the implicit bucket a row without a group falls into. */
@@ -38,6 +45,7 @@ export function useTodos() {
   const { userId } = useCurrentUser()
   const { prefs } = usePreferences()
   const { groupsById, namePath } = useGroups()
+  const { isOnline, enqueue, cancelPendingForEntity } = useSyncEngine()
   const toast = useToast()
 
   const todos = useState<TodoWithGroup[]>('todos-list', () => [])
@@ -52,6 +60,23 @@ export function useTodos() {
   const searchQuery = useState<string>('todos-search', () => '')
 
   async function loadTodos() {
+    // Immediate populate from local IndexedDB cache if state is currently empty
+    if (import.meta.client && todos.value.length === 0) {
+      try {
+        const cached = await getCachedTodos()
+        if (cached && cached.length > 0 && todos.value.length === 0) {
+          todos.value = cached
+        }
+      } catch (err) {
+        console.warn('Failed to load cached todos:', err)
+      }
+    }
+
+    if (!isOnline.value) {
+      loading.value = false
+      return
+    }
+
     loading.value = true
     try {
       // The embedded group carries name, tone and `path`; the generated types do not
@@ -65,18 +90,29 @@ export function useTodos() {
         }
 
       if (error) {
-        console.error('Error fetching todos:', error)
-        toast.add({
-          title: 'Errore nel caricamento',
-          description: error.message || 'Impossibile caricare i task',
-          color: 'error'
-        })
+        if (!isNetworkError(error)) {
+          console.error('Error fetching todos:', error)
+          toast.add({
+            title: 'Errore nel caricamento',
+            description: error.message || 'Impossibile caricare i task',
+            color: 'error'
+          })
+        }
         return
       }
 
-      todos.value = data ?? []
+      // Preserve any local un-synced negative ID items that are still in memory
+      const pendingLocal = todos.value.filter(t => t.id < 0)
+      const fetched = data ?? []
+      todos.value = [...pendingLocal, ...fetched.filter(f => !pendingLocal.some(p => p.id === f.id))]
+
+      if (import.meta.client) {
+        await setCachedTodos(todos.value)
+      }
     } catch (err: unknown) {
-      console.error('Unexpected error loading todos:', err)
+      if (!isNetworkError(err)) {
+        console.error('Unexpected error loading todos:', err)
+      }
     } finally {
       loading.value = false
     }
@@ -135,6 +171,41 @@ export function useTodos() {
         payload.user_id = userId.value
       }
 
+      // If offline, save locally in IndexedDB and queue for online sync
+      if (!isOnline.value) {
+        const tempId = -1 * (Date.now() + Math.floor(Math.random() * 1000))
+        const matchedGroup = groupId ? (groupsById.value.get(groupId) ?? null) : null
+        const offlineTodo: TodoWithGroup = {
+          id: tempId,
+          title,
+          group_id: groupId ?? null,
+          group: matchedGroup,
+          group_name: matchedGroup?.name ?? 'Generale',
+          completed: false,
+          created_at: new Date().toISOString(),
+          due_at: payload.due_at ?? null,
+          due_all_day: payload.due_all_day ?? false,
+          reminder_minutes: payload.reminder_minutes ?? null,
+          reminder_at: payload.reminder_at ?? null,
+          reminder_sent_at: null,
+          timezone: payload.timezone ?? 'UTC',
+          user_id: payload.user_id ?? null
+        }
+
+        todos.value = [offlineTodo, ...todos.value]
+        if (import.meta.client) {
+          await putCachedTodo(offlineTodo)
+          await enqueue('create_todo', 'todo', tempId, payload)
+        }
+
+        toast.add({
+          title: 'Attività creata (offline)',
+          description: `"${title}" salvata in locale: sincronizzazione automatica non appena tornerà la rete.`,
+          color: 'neutral'
+        })
+        return true
+      }
+
       let insertResult = await supabase
         .from('todos')
         .insert(payload)
@@ -163,6 +234,41 @@ export function useTodos() {
       const { data, error } = insertResult
 
       if (error) {
+        if (isNetworkError(error)) {
+          // Network failed mid-request: fallback to offline save
+          const tempId = -1 * (Date.now() + Math.floor(Math.random() * 1000))
+          const matchedGroup = groupId ? (groupsById.value.get(groupId) ?? null) : null
+          const offlineTodo: TodoWithGroup = {
+            id: tempId,
+            title,
+            group_id: groupId ?? null,
+            group: matchedGroup,
+            group_name: matchedGroup?.name ?? 'Generale',
+            completed: false,
+            created_at: new Date().toISOString(),
+            due_at: payload.due_at ?? null,
+            due_all_day: payload.due_all_day ?? false,
+            reminder_minutes: payload.reminder_minutes ?? null,
+            reminder_at: payload.reminder_at ?? null,
+            reminder_sent_at: null,
+            timezone: payload.timezone ?? 'UTC',
+            user_id: payload.user_id ?? null
+          }
+
+          todos.value = [offlineTodo, ...todos.value]
+          if (import.meta.client) {
+            await putCachedTodo(offlineTodo)
+            await enqueue('create_todo', 'todo', tempId, payload)
+          }
+
+          toast.add({
+            title: 'Salvata in locale (offline)',
+            description: `"${title}" salvata: verrà sincronizzata appena online.`,
+            color: 'neutral'
+          })
+          return true
+        }
+
         toast.add({
           title: 'Errore inserimento',
           description: error.message,
@@ -173,6 +279,9 @@ export function useTodos() {
 
       if (data) {
         todos.value = [data, ...todos.value.filter(todo => todo.id !== data.id)]
+        if (import.meta.client) {
+          await putCachedTodo(data)
+        }
       } else {
         await loadTodos()
       }
@@ -184,19 +293,70 @@ export function useTodos() {
       })
       return true
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        const tempId = -1 * (Date.now() + Math.floor(Math.random() * 1000))
+        const matchedGroup = groupId ? (groupsById.value.get(groupId) ?? null) : null
+        const offlineTodo: TodoWithGroup = {
+          id: tempId,
+          title,
+          group_id: groupId ?? null,
+          group: matchedGroup,
+          group_name: matchedGroup?.name ?? 'Generale',
+          completed: false,
+          created_at: new Date().toISOString(),
+          due_at: dueOptions?.dueAt ?? null,
+          due_all_day: dueOptions?.dueAllDay ?? false,
+          reminder_minutes: dueOptions?.reminderMinutes ?? null,
+          reminder_at: dueOptions?.reminderAt ?? null,
+          reminder_sent_at: null,
+          timezone: dueOptions?.timezone ?? 'UTC',
+          user_id: userId.value
+        }
+
+        todos.value = [offlineTodo, ...todos.value]
+        if (import.meta.client) {
+          await putCachedTodo(offlineTodo)
+          await enqueue('create_todo', 'todo', tempId, {
+            title,
+            group_id: groupId ?? null,
+            completed: false,
+            due_at: offlineTodo.due_at,
+            due_all_day: offlineTodo.due_all_day,
+            reminder_minutes: offlineTodo.reminder_minutes,
+            reminder_at: offlineTodo.reminder_at,
+            timezone: offlineTodo.timezone,
+            user_id: userId.value
+          })
+        }
+
+        toast.add({
+          title: 'Salvata in locale (offline)',
+          description: `"${title}" salvata: verrà sincronizzata appena online.`,
+          color: 'neutral'
+        })
+        return true
+      }
       console.error('Error adding todo:', err)
       return false
     } finally {
       isAdding.value = false
     }
   }
-
   async function toggleTodo(todo: TodoWithGroup) {
     const snapshot = { ...todo }
     const nextCompleted = !todo.completed
 
     // Optimistic local update
     patch(todo.id, { completed: nextCompleted })
+    const updated = { ...todo, completed: nextCompleted }
+    if (import.meta.client) {
+      await putCachedTodo(updated)
+    }
+
+    if (!isOnline.value || todo.id < 0) {
+      await enqueue('update_todo', 'todo', todo.id, { completed: nextCompleted })
+      return
+    }
 
     activeActionId.value = todo.id
     try {
@@ -207,7 +367,12 @@ export function useTodos() {
         .select('id')
 
       if (error) {
+        if (isNetworkError(error)) {
+          await enqueue('update_todo', 'todo', todo.id, { completed: nextCompleted })
+          return
+        }
         restore(todo.id, snapshot)
+        if (import.meta.client) await putCachedTodo(snapshot)
         toast.add({
           title: 'Errore aggiornamento',
           description: error.message,
@@ -215,11 +380,17 @@ export function useTodos() {
         })
       } else if (!data || data.length === 0) {
         restore(todo.id, snapshot)
+        if (import.meta.client) await putCachedTodo(snapshot)
         notPermitted('Spunta non salvata')
       }
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        await enqueue('update_todo', 'todo', todo.id, { completed: nextCompleted })
+        return
+      }
       console.error('Error toggling todo:', err)
       restore(todo.id, snapshot)
+      if (import.meta.client) await putCachedTodo(snapshot)
     } finally {
       activeActionId.value = null
     }
@@ -245,15 +416,43 @@ export function useTodos() {
       return todo
     })
 
+    if (import.meta.client) {
+      await setCachedTodos(todos.value)
+    }
+
+    if (!isOnline.value) {
+      await enqueue('toggle_todos', 'todo', undefined, { ids, completed: nextCompleted })
+      toast.add({
+        title: nextCompleted ? 'Tutte completate (offline)' : 'Tutte da fare (offline)',
+        description: `${ids.length} attività aggiornate in locale.`,
+        color: 'neutral'
+      })
+      return
+    }
+
     try {
+      const realIds = ids.filter(id => id > 0)
+      const tempIds = ids.filter(id => id < 0)
+
+      if (tempIds.length > 0) {
+        await enqueue('toggle_todos', 'todo', undefined, { ids: tempIds, completed: nextCompleted })
+      }
+
+      if (realIds.length === 0) return
+
       const { data, error } = await supabase
         .from('todos')
         .update({ completed: nextCompleted })
-        .in('id', ids)
+        .in('id', realIds)
         .select('id')
 
       if (error) {
+        if (isNetworkError(error)) {
+          await enqueue('toggle_todos', 'todo', undefined, { ids: realIds, completed: nextCompleted })
+          return
+        }
         todos.value = todos.value.map(todo => snapshots.get(todo.id) ?? todo)
+        if (import.meta.client) await setCachedTodos(todos.value)
         toast.add({
           title: 'Errore aggiornamento',
           description: error.message,
@@ -263,14 +462,14 @@ export function useTodos() {
       }
 
       const updatedIds = new Set((data ?? []).map(row => row.id))
-      if (updatedIds.size < ids.length) {
-        // Restore items that were not updated due to permissions
+      if (updatedIds.size < realIds.length) {
         todos.value = todos.value.map(todo => {
           if (snapshots.has(todo.id) && !updatedIds.has(todo.id)) {
             return snapshots.get(todo.id)!
           }
           return todo
         })
+        if (import.meta.client) await setCachedTodos(todos.value)
 
         if (updatedIds.size === 0) {
           notPermitted('Spunta non salvata')
@@ -285,13 +484,18 @@ export function useTodos() {
       } else {
         toast.add({
           title: nextCompleted ? 'Tutte completate' : 'Tutte da fare',
-          description: `${updatedIds.size} ${updatedIds.size === 1 ? 'attività' : 'attività'} ${nextCompleted ? 'segnata come completata' : 'riportata da fare'}.`,
+          description: `${ids.length} ${ids.length === 1 ? 'attività' : 'attività'} ${nextCompleted ? 'segnata come completata' : 'riportata da fare'}.`,
           color: 'success'
         })
       }
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        await enqueue('toggle_todos', 'todo', undefined, { ids, completed: nextCompleted })
+        return
+      }
       console.error('Error toggling todos:', err)
       todos.value = todos.value.map(todo => snapshots.get(todo.id) ?? todo)
+      if (import.meta.client) await setCachedTodos(todos.value)
     }
   }
 
@@ -303,6 +507,19 @@ export function useTodos() {
     if (!snapshot || snapshot.title === trimmed) return
 
     patch(id, { title: trimmed })
+    const updated = { ...snapshot, title: trimmed }
+    if (import.meta.client) {
+      await putCachedTodo(updated)
+    }
+
+    if (!isOnline.value || id < 0) {
+      await enqueue('update_todo', 'todo', id, { title: trimmed })
+      toast.add({
+        title: 'Modifica salvata in locale (offline)',
+        color: 'neutral'
+      })
+      return
+    }
 
     activeActionId.value = id
     try {
@@ -313,7 +530,16 @@ export function useTodos() {
         .select('id')
 
       if (error) {
+        if (isNetworkError(error)) {
+          await enqueue('update_todo', 'todo', id, { title: trimmed })
+          toast.add({
+            title: 'Modifica salvata in locale (offline)',
+            color: 'neutral'
+          })
+          return
+        }
         restore(id, snapshot)
+        if (import.meta.client) await putCachedTodo(snapshot)
         toast.add({
           title: 'Errore modifica',
           description: error.message,
@@ -321,6 +547,7 @@ export function useTodos() {
         })
       } else if (!data || data.length === 0) {
         restore(id, snapshot)
+        if (import.meta.client) await putCachedTodo(snapshot)
         notPermitted('Titolo non salvato')
       } else {
         toast.add({
@@ -329,8 +556,13 @@ export function useTodos() {
         })
       }
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        await enqueue('update_todo', 'todo', id, { title: trimmed })
+        return
+      }
       console.error('Error updating title:', err)
       restore(id, snapshot)
+      if (import.meta.client) await putCachedTodo(snapshot)
     } finally {
       activeActionId.value = null
     }
@@ -340,7 +572,28 @@ export function useTodos() {
     const snapshot = todos.value.find(todo => todo.id === id)
     if (!snapshot || (snapshot.group_id ?? null) === (groupId ?? null)) return
 
-    patch(id, { group_id: groupId })
+    const matchedGroup = groupId ? (groupsById.value.get(groupId) ?? null) : null
+    const updated: TodoWithGroup = {
+      ...snapshot,
+      group_id: groupId,
+      group: matchedGroup,
+      group_name: matchedGroup?.name ?? 'Generale'
+    }
+
+    patch(id, updated)
+    if (import.meta.client) {
+      await putCachedTodo(updated)
+    }
+
+    if (!isOnline.value || id < 0) {
+      await enqueue('update_todo', 'todo', id, { group_id: groupId })
+      toast.add({
+        title: 'Gruppo aggiornato (offline)',
+        description: `Spostato in "${groupNameOf(updated)}"`,
+        color: 'neutral'
+      })
+      return
+    }
 
     activeActionId.value = id
     try {
@@ -354,7 +607,12 @@ export function useTodos() {
         }
 
       if (error) {
+        if (isNetworkError(error)) {
+          await enqueue('update_todo', 'todo', id, { group_id: groupId })
+          return
+        }
         restore(id, snapshot)
+        if (import.meta.client) await putCachedTodo(snapshot)
         toast.add({
           title: 'Errore spostamento',
           description: error.message,
@@ -362,10 +620,11 @@ export function useTodos() {
         })
       } else if (!data || data.length === 0) {
         restore(id, snapshot)
+        if (import.meta.client) await putCachedTodo(snapshot)
         notPermitted('Spostamento non salvato')
       } else {
-        // Take the row the database returned: it carries the mirrored group name.
         patch(id, data[0]!)
+        if (import.meta.client) await putCachedTodo(data[0]!)
         toast.add({
           title: 'Gruppo aggiornato',
           description: `Spostato in "${groupNameOf(data[0]!)}"`,
@@ -373,8 +632,13 @@ export function useTodos() {
         })
       }
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        await enqueue('update_todo', 'todo', id, { group_id: groupId })
+        return
+      }
       console.error('Error updating group:', err)
       restore(id, snapshot)
+      if (import.meta.client) await putCachedTodo(snapshot)
     } finally {
       activeActionId.value = null
     }
@@ -394,8 +658,21 @@ export function useTodos() {
     }
 
     patch(id, changes)
-    activeActionId.value = id
+    const updated = { ...snapshot, ...changes }
+    if (import.meta.client) {
+      await putCachedTodo(updated)
+    }
 
+    if (!isOnline.value || id < 0) {
+      await enqueue('update_todo', 'todo', id, changes)
+      toast.add({
+        title: 'Promemoria salvato (offline)',
+        color: 'neutral'
+      })
+      return true
+    }
+
+    activeActionId.value = id
     try {
       let { data, error } = await supabase
         .from('todos')
@@ -420,7 +697,12 @@ export function useTodos() {
       }
 
       if (error) {
+        if (isNetworkError(error)) {
+          await enqueue('update_todo', 'todo', id, changes)
+          return true
+        }
         restore(id, snapshot)
+        if (import.meta.client) await putCachedTodo(snapshot)
         toast.add({
           title: 'Errore scadenza o promemoria',
           description: error.message,
@@ -429,6 +711,7 @@ export function useTodos() {
         return false
       } else if (!data || data.length === 0) {
         restore(id, snapshot)
+        if (import.meta.client) await putCachedTodo(snapshot)
         notPermitted('Modifiche non salvate')
         return false
       } else {
@@ -439,8 +722,13 @@ export function useTodos() {
         return true
       }
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        await enqueue('update_todo', 'todo', id, changes)
+        return true
+      }
       console.error('Error updating due date / reminder:', err)
       restore(id, snapshot)
+      if (import.meta.client) await putCachedTodo(snapshot)
       return false
     } finally {
       activeActionId.value = null
@@ -450,8 +738,14 @@ export function useTodos() {
   async function markReminderSent(id: number): Promise<void> {
     const sentAt = new Date().toISOString()
     patch(id, { reminder_sent_at: sentAt })
+    const snapshot = todos.value.find(todo => todo.id === id)
+    if (snapshot && import.meta.client) {
+      await putCachedTodo({ ...snapshot, reminder_sent_at: sentAt })
+    }
     try {
-      await supabase.from('todos').update({ reminder_sent_at: sentAt }).eq('id', id)
+      if (isOnline.value && id > 0) {
+        await supabase.from('todos').update({ reminder_sent_at: sentAt }).eq('id', id)
+      }
     } catch (err: unknown) {
       console.error('Error marking reminder sent:', err)
     }
@@ -463,6 +757,31 @@ export function useTodos() {
     activeActionId.value = id
 
     todos.value = todos.value.filter(todo => todo.id !== id)
+    if (import.meta.client) {
+      await removeCachedTodo(id)
+    }
+
+    if (id < 0) {
+      await cancelPendingForEntity(id)
+      activeActionId.value = null
+      toast.add({
+        title: 'Attività eliminata',
+        description: target ? `"${target.title}" è stata rimossa` : undefined,
+        color: 'neutral'
+      })
+      return
+    }
+
+    if (!isOnline.value) {
+      await enqueue('delete_todo', 'todo', id, { id })
+      activeActionId.value = null
+      toast.add({
+        title: 'Attività eliminata (offline)',
+        description: target ? `"${target.title}" rimossa localmente` : undefined,
+        color: 'neutral'
+      })
+      return
+    }
 
     try {
       const { data, error } = await supabase
@@ -472,7 +791,12 @@ export function useTodos() {
         .select('id')
 
       if (error) {
+        if (isNetworkError(error)) {
+          await enqueue('delete_todo', 'todo', id, { id })
+          return
+        }
         todos.value = snapshot
+        if (import.meta.client) await setCachedTodos(snapshot)
         toast.add({
           title: 'Errore eliminazione',
           description: error.message,
@@ -480,6 +804,7 @@ export function useTodos() {
         })
       } else if (!data || data.length === 0) {
         todos.value = snapshot
+        if (import.meta.client) await setCachedTodos(snapshot)
         notPermitted('Eliminazione non eseguita')
       } else {
         toast.add({
@@ -489,7 +814,12 @@ export function useTodos() {
         })
       }
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        await enqueue('delete_todo', 'todo', id, { id })
+        return
+      }
       todos.value = snapshot
+      if (import.meta.client) await setCachedTodos(snapshot)
       console.error('Error deleting todo:', err)
     } finally {
       activeActionId.value = null
@@ -497,8 +827,6 @@ export function useTodos() {
   }
 
   async function clearCompleted() {
-    // Scoped to the current group on purpose: on a group page "delete completed"
-    // must not reach the completed activities of every other group.
     const completedIds = scopedTodos.value.filter(todo => todo.completed).map(todo => todo.id)
     if (completedIds.length === 0) return
 
@@ -506,15 +834,51 @@ export function useTodos() {
     const snapshot = [...todos.value]
     todos.value = todos.value.filter(todo => !targetIds.has(todo.id))
 
+    if (import.meta.client) {
+      await setCachedTodos(todos.value)
+    }
+
+    // Cancel pending queue actions for any offline-only items among completedIds
+    for (const id of completedIds) {
+      if (id < 0) {
+        await cancelPendingForEntity(id)
+      }
+    }
+
+    const realCompletedIds = completedIds.filter(id => id > 0)
+    if (realCompletedIds.length === 0) {
+      toast.add({
+        title: 'Completati eliminati',
+        description: `${completedIds.length} attività completate rimosse`,
+        color: 'neutral'
+      })
+      return
+    }
+
+    if (!isOnline.value) {
+      await enqueue('clear_completed_todos', 'todo', undefined, { ids: realCompletedIds })
+      toast.add({
+        title: 'Completati eliminati (offline)',
+        description: `${completedIds.length} attività completate rimosse in locale`,
+        color: 'neutral'
+      })
+      return
+    }
+
     try {
       const { data, error } = await supabase
         .from('todos')
         .delete()
-        .in('id', completedIds)
+        .in('id', realCompletedIds)
         .select('id')
 
       if (error) {
+        if (isNetworkError(error)) {
+          await enqueue('clear_completed_todos', 'todo', undefined, { ids: realCompletedIds })
+          return
+        }
         todos.value = snapshot
+        if (import.meta.client) await setCachedTodos(snapshot)
         toast.add({
           title: 'Errore durante la pulizia',
           description: error.message,
@@ -523,7 +887,7 @@ export function useTodos() {
         return
       }
 
-      const removed = data?.length ?? 0
+      const removed = (data?.length ?? 0) + (completedIds.length - realCompletedIds.length)
       if (removed === completedIds.length) {
         toast.add({
           title: 'Completati eliminati',
@@ -531,7 +895,6 @@ export function useTodos() {
           color: 'neutral'
         })
       } else {
-        // Some were read-only shares: resync rather than trust the optimistic list.
         await loadTodos()
         toast.add({
           title: 'Pulizia parziale',
@@ -540,7 +903,12 @@ export function useTodos() {
         })
       }
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        await enqueue('clear_completed_todos', 'todo', undefined, { ids: realCompletedIds })
+        return
+      }
       todos.value = snapshot
+      if (import.meta.client) await setCachedTodos(snapshot)
       console.error('Error clearing completed:', err)
     }
   }

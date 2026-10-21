@@ -11,6 +11,7 @@ import { useShareDialog } from '~/composables/useShareDialog'
 import { useAppBadge } from '~/composables/useAppBadge'
 import { useGroups } from '~/composables/useGroups'
 import { useNotifications } from '~/composables/useNotifications'
+import { useSyncEngine } from '~/composables/useSyncEngine'
 import { appleSplashLinks } from '~/utils/appleSplash'
 
 useSeoMeta({
@@ -30,6 +31,11 @@ const { status: approvalStatus, isAdmin, isApproved, loadProfile, resetProfile }
 const { needRefresh, offlineReady, updateApp } = usePwa()
 const { focusQuickAdd } = useQuickAdd()
 const { open: isShareModalOpen, targetGroup: shareTarget, openShare } = useShareDialog()
+const { isOnline, isSyncing, pendingCount, initSyncEngine, sync } = useSyncEngine()
+
+onMounted(() => {
+  initSyncEngine()
+})
 
 // Projects the stored preferences onto <html> (accent, density, text size) and
 // keeps the browser/PWA theme colour in step with the chosen accent.
@@ -101,6 +107,9 @@ watch(user, async (currentUser) => {
     loadTodos()
     loadNotes()
     loadShares()
+    if (isOnline.value) {
+      sync()
+    }
   }
 }, { immediate: true })
 </script>
@@ -119,6 +128,50 @@ watch(user, async (currentUser) => {
         @open-share="openShare(null)"
         @open-settings="isSettingsModalOpen = true"
       />
+
+      <!-- Offline & Sync Status Banner -->
+      <div
+        v-if="user && isApproved && (!isOnline || isSyncing || pendingCount > 0)"
+        class="sticky top-16 z-20 border-b backdrop-blur-md transition-colors"
+        :class="!isOnline
+          ? 'border-amber-200/80 bg-amber-50/95 text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/90 dark:text-amber-200'
+          : isSyncing
+            ? 'border-sky-200/80 bg-sky-50/95 text-sky-900 dark:border-sky-900/60 dark:bg-sky-950/90 dark:text-sky-200'
+            : 'border-emerald-200/80 bg-emerald-50/95 text-emerald-900 dark:border-emerald-900/60 dark:bg-emerald-950/90 dark:text-emerald-200'"
+      >
+        <div class="mx-auto flex max-w-3xl items-center justify-between gap-3 px-4 py-2 sm:px-6 text-xs font-medium">
+          <div class="flex items-center gap-2 min-w-0">
+            <UIcon
+              :name="!isOnline ? 'i-lucide-wifi-off' : isSyncing ? 'i-lucide-refresh-cw' : 'i-lucide-cloud-upload'"
+              class="h-4 w-4 shrink-0"
+              :class="{ 'animate-spin': isSyncing }"
+            />
+            <span class="truncate">
+              <template v-if="!isOnline">
+                Modalità offline — salvataggio locale attivo
+                <span v-if="pendingCount > 0" class="font-bold">({{ pendingCount }} in attesa di sincronizzazione)</span>
+              </template>
+              <template v-else-if="isSyncing">
+                Sincronizzazione con il server in corso...
+              </template>
+              <template v-else-if="pendingCount > 0">
+                {{ pendingCount }} {{ pendingCount === 1 ? 'modifica in attesa' : 'modifiche in attesa' }} di sincronizzazione
+              </template>
+            </span>
+          </div>
+
+          <div v-if="isOnline && !isSyncing && pendingCount > 0" class="shrink-0">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 font-semibold text-xs bg-emerald-600 text-white hover:bg-emerald-700 active:scale-95 transition shadow-sm"
+              @click="sync()"
+            >
+              <UIcon name="i-lucide-refresh-cw" class="h-3 w-3" />
+              <span>Sincronizza ora</span>
+            </button>
+          </div>
+        </div>
+      </div>
 
       <!-- Unauthenticated: the sign-in screen -->
       <main v-if="!user" class="mx-auto max-w-3xl px-4 sm:px-6">
