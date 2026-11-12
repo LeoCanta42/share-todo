@@ -1,6 +1,10 @@
 import type { Database } from '~/types/database.types'
 import type { NoteWithGroup } from '~/types/note'
 import { useShares } from '~/composables/useShares'
+import { useGroups } from '~/composables/useGroups'
+import { offlineStorage } from '~/utils/offlineStorage'
+import { useOfflineSync } from '~/composables/useOfflineSync'
+import { isNetworkError } from '~/utils/network'
 
 export interface NoteStats {
   total: number
@@ -13,28 +17,46 @@ const GROUP_COLUMNS = 'id, name, parent_id, path, depth, tone, icon'
 /**
  * Notes.
  *
- * Deliberately the same shape as `useTodos`: a note lives in a group and carries a
- * `user_id`, so it inherits both the group sharing (a grant on `Lavoro` covers
- * `Lavoro/Clienti` for notes exactly as it does for activities — one policy function
- * decides both) and the optimistic-update/refusal handling below.
+ * A note lives in a group and carries a `user_id`.
+ * Fully supported for offline viewing and offline mutations with automatic sync.
  */
 export function useNotes() {
-  const supabase = useSupabaseClient<Database>()
+  const supabase = useNuxtApp().$supabase?.client as ReturnType<typeof useSupabaseClient<Database>> | undefined
+    ?? useSupabaseClient<Database>()
   const { userId } = useCurrentUser()
   const { permissionFor } = useShares()
+  const { groupsById } = useGroups()
+  const { enqueueMutation, removeMutationsForTempId } = useOfflineSync()
   const toast = useToast()
 
-  const notes = useState<NoteWithGroup[]>('notes-list', () => [])
+  const initialNotes = import.meta.client && !offlineStorage.isLoggedOut()
+    ? offlineStorage.getNotes()
+    : []
+
+  const notes = useState<NoteWithGroup[]>('notes-list', () => initialNotes)
   const loading = useState<boolean>('notes-loading', () => false)
   const isSaving = useState<boolean>('notes-is-saving', () => false)
   const activeActionId = useState<number | null>('notes-active-id', () => null)
 
+  // Hydrate client-side if needed
+  if (import.meta.client && !offlineStorage.isLoggedOut() && notes.value.length === 0) {
+    const cached = offlineStorage.getNotes()
+    if (cached.length > 0) {
+      notes.value = cached
+    }
+  }
+
   async function loadNotes() {
+    if (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine) {
+      const cached = offlineStorage.getNotes()
+      if (cached.length > 0) {
+        notes.value = cached
+      }
+      return
+    }
+
     loading.value = true
     try {
-      // The embedded group is what the rows display and what permissions are
-      // resolved against; the generated types do not know the relationship yet, so
-      // the result is narrowed here (see `database.types.ts`).
       const { data, error } = await supabase
         .from('notes')
         .select(`*, group:groups(${GROUP_COLUMNS})`)
@@ -44,18 +66,33 @@ export function useNotes() {
         }
 
       if (error) {
-        console.error('Error fetching notes:', error)
-        toast.add({
-          title: 'Errore nel caricamento',
-          description: error.message || 'Impossibile caricare le note',
-          color: 'error'
-        })
+        if (!isNetworkError(error)) {
+          console.error('Error fetching notes:', error)
+          toast.add({
+            title: 'Errore nel caricamento',
+            description: error.message || 'Impossibile caricare le note',
+            color: 'error'
+          })
+        }
+        const cached = offlineStorage.getNotes()
+        if (cached.length > 0) {
+          notes.value = cached
+        }
         return
       }
 
-      notes.value = data ?? []
+      const tempNotes = notes.value.filter(n => n.id < 0)
+      const serverNotes = data ?? []
+      notes.value = [...tempNotes, ...serverNotes.filter(sn => !tempNotes.some(tn => tn.id === sn.id))]
+      offlineStorage.setNotes(notes.value)
     } catch (err: unknown) {
-      console.error('Unexpected error loading notes:', err)
+      if (!isNetworkError(err)) {
+        console.error('Unexpected error loading notes:', err)
+      }
+      const cached = offlineStorage.getNotes()
+      if (cached.length > 0) {
+        notes.value = cached
+      }
     } finally {
       loading.value = false
     }
@@ -71,16 +108,59 @@ export function useNotes() {
     }
   }
 
-  /**
-   * Postgres filters out rows a policy forbids instead of raising, so a write that
-   * touched nothing *is* a refusal — see the same note in `useTodos`.
-   */
   function notPermitted(action: string) {
     toast.add({
       title: 'Modifica non consentita',
       description: `${action}: la nota è condivisa in sola lettura oppure non è più accessibile.`,
       color: 'warning'
     })
+  }
+
+  function addOfflineNote(title: string, rawBody: string, groupId: string | null): boolean {
+    const tempId = -Date.now()
+    const targetGroup = groupId ? groupsById.value.get(groupId) : null
+
+    const tempNote: NoteWithGroup = {
+      id: tempId,
+      title,
+      body: rawBody,
+      group_id: groupId ?? null,
+      group_name: targetGroup ? targetGroup.name : 'Generale',
+      group: targetGroup ? {
+        id: targetGroup.id,
+        name: targetGroup.name,
+        parent_id: targetGroup.parent_id,
+        path: targetGroup.path,
+        depth: targetGroup.depth,
+        tone: targetGroup.tone,
+        icon: targetGroup.icon
+      } : null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      user_id: userId.value
+    }
+
+    notes.value = [tempNote, ...notes.value.filter(n => n.id !== tempId)]
+    offlineStorage.setNotes(notes.value)
+
+    enqueueMutation({
+      type: 'note:insert',
+      tempId,
+      payload: {
+        title,
+        body: rawBody,
+        group_id: groupId ?? null,
+        user_id: userId.value
+      }
+    })
+
+    toast.add({
+      title: 'Nota creata (offline)',
+      description: `"${title}" salvata localmente. Verrà sincronizzata online.`,
+      color: 'info'
+    })
+
+    return true
   }
 
   async function addNote(
@@ -90,6 +170,10 @@ export function useNotes() {
   ): Promise<boolean> {
     const title = rawTitle.trim()
     if (!title) return false
+
+    if (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine) {
+      return addOfflineNote(title, rawBody, groupId)
+    }
 
     isSaving.value = true
     try {
@@ -113,6 +197,9 @@ export function useNotes() {
         }
 
       if (error) {
+        if (isNetworkError(error)) {
+          return addOfflineNote(title, rawBody, groupId)
+        }
         toast.add({
           title: 'Errore inserimento',
           description: error.message,
@@ -123,6 +210,7 @@ export function useNotes() {
 
       if (data) {
         notes.value = [data, ...notes.value.filter(note => note.id !== data.id)]
+        offlineStorage.setNotes(notes.value)
       } else {
         await loadNotes()
       }
@@ -134,6 +222,9 @@ export function useNotes() {
       })
       return true
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        return addOfflineNote(title, rawBody, groupId)
+      }
       console.error('Error adding note:', err)
       return false
     } finally {
@@ -143,7 +234,7 @@ export function useNotes() {
 
   async function updateNote(
     id: number,
-    changes: { title?: string, body?: string, group_id?: string | null }
+    changes: { title?: string; body?: string; group_id?: string | null }
   ): Promise<boolean> {
     const snapshot = notes.value.find(note => note.id === id)
     if (!snapshot) return false
@@ -161,17 +252,52 @@ export function useNotes() {
     }
     if (changes.group_id !== undefined && (changes.group_id ?? null) !== (snapshot.group_id ?? null)) {
       payload.group_id = changes.group_id
+      const targetGroup = changes.group_id ? groupsById.value.get(changes.group_id) : null
+      if (targetGroup) {
+        (payload as any).group_name = targetGroup.name
+        ;(payload as any).group = {
+          id: targetGroup.id,
+          name: targetGroup.name,
+          parent_id: targetGroup.parent_id,
+          path: targetGroup.path,
+          depth: targetGroup.depth,
+          tone: targetGroup.tone,
+          icon: targetGroup.icon
+        }
+      } else if (changes.group_id === null) {
+        (payload as any).group_name = 'Generale'
+        ;(payload as any).group = null
+      }
     }
 
     if (Object.keys(payload).length === 0) return true
 
     patch(id, payload as Partial<NoteWithGroup>)
+    offlineStorage.setNotes(notes.value)
+
+    if (id < 0 || (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine)) {
+      enqueueMutation({
+        type: 'note:update',
+        targetId: id,
+        payload: {
+          title: payload.title,
+          body: payload.body,
+          group_id: payload.group_id
+        }
+      })
+      toast.add({ title: 'Nota aggiornata (offline)', color: 'info' })
+      return true
+    }
 
     activeActionId.value = id
     try {
       const { data, error } = await supabase
         .from('notes')
-        .update(payload)
+        .update({
+          title: payload.title,
+          body: payload.body,
+          group_id: payload.group_id
+        })
         .eq('id', id)
         .select(`*, group:groups(${GROUP_COLUMNS})`) as unknown as {
           data: NoteWithGroup[] | null
@@ -179,7 +305,21 @@ export function useNotes() {
         }
 
       if (error) {
+        if (isNetworkError(error)) {
+          enqueueMutation({
+            type: 'note:update',
+            targetId: id,
+            payload: {
+              title: payload.title,
+              body: payload.body,
+              group_id: payload.group_id
+            }
+          })
+          toast.add({ title: 'Nota aggiornata (offline)', color: 'info' })
+          return true
+        }
         restore(id, snapshot)
+        offlineStorage.setNotes(notes.value)
         toast.add({
           title: 'Errore modifica',
           description: error.message,
@@ -190,17 +330,32 @@ export function useNotes() {
 
       if (!data || data.length === 0) {
         restore(id, snapshot)
+        offlineStorage.setNotes(notes.value)
         notPermitted('Modifica non salvata')
         return false
       }
 
-      // The database derives the mirrored name, so take the row it returned.
       patch(id, data[0]!)
+      offlineStorage.setNotes(notes.value)
       toast.add({ title: 'Nota aggiornata', color: 'success' })
       return true
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        enqueueMutation({
+          type: 'note:update',
+          targetId: id,
+          payload: {
+            title: payload.title,
+            body: payload.body,
+            group_id: payload.group_id
+          }
+        })
+        toast.add({ title: 'Nota aggiornata (offline)', color: 'info' })
+        return true
+      }
       console.error('Error updating note:', err)
       restore(id, snapshot)
+      offlineStorage.setNotes(notes.value)
       return false
     } finally {
       activeActionId.value = null
@@ -213,6 +368,32 @@ export function useNotes() {
 
     activeActionId.value = id
     notes.value = notes.value.filter(note => note.id !== id)
+    offlineStorage.setNotes(notes.value)
+
+    if (id < 0) {
+      removeMutationsForTempId(id)
+      toast.add({
+        title: 'Nota eliminata',
+        description: target ? `"${target.title}" è stata rimossa` : undefined,
+        color: 'neutral'
+      })
+      activeActionId.value = null
+      return true
+    }
+
+    if (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine) {
+      enqueueMutation({
+        type: 'note:delete',
+        targetId: id
+      })
+      toast.add({
+        title: 'Nota eliminata (offline)',
+        description: target ? `"${target.title}" è stata rimossa` : undefined,
+        color: 'neutral'
+      })
+      activeActionId.value = null
+      return true
+    }
 
     try {
       const { data, error } = await supabase
@@ -222,7 +403,20 @@ export function useNotes() {
         .select('id')
 
       if (error) {
+        if (isNetworkError(error)) {
+          enqueueMutation({
+            type: 'note:delete',
+            targetId: id
+          })
+          toast.add({
+            title: 'Nota eliminata (offline)',
+            description: target ? `"${target.title}" è stata rimossa` : undefined,
+            color: 'neutral'
+          })
+          return true
+        }
         notes.value = snapshot
+        offlineStorage.setNotes(notes.value)
         toast.add({
           title: 'Errore eliminazione',
           description: error.message,
@@ -233,6 +427,7 @@ export function useNotes() {
 
       if (!data || data.length === 0) {
         notes.value = snapshot
+        offlineStorage.setNotes(notes.value)
         notPermitted('Eliminazione non eseguita')
         return false
       }
@@ -244,7 +439,20 @@ export function useNotes() {
       })
       return true
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        enqueueMutation({
+          type: 'note:delete',
+          targetId: id
+        })
+        toast.add({
+          title: 'Nota eliminata (offline)',
+          description: target ? `"${target.title}" è stata rimossa` : undefined,
+          color: 'neutral'
+        })
+        return true
+      }
       notes.value = snapshot
+      offlineStorage.setNotes(notes.value)
       console.error('Error deleting note:', err)
       return false
     } finally {
@@ -258,12 +466,10 @@ export function useNotes() {
     return Boolean(note.user_id && note.user_id !== id)
   }
 
-  /** Same grant lookup the todo rows use — notes share the group permissions. */
   function notePermission(note: NoteWithGroup) {
     return permissionFor(note)
   }
 
-  /** How many notes each group holds, by group id. */
   const noteCounts = computed<Record<string, number>>(() => {
     const counts: Record<string, number> = {}
     for (const note of notes.value) {
@@ -274,10 +480,6 @@ export function useNotes() {
     return counts
   })
 
-  /**
-   * The same counts, but a group also carries what its sub-groups hold — that is the
-   * number worth showing on a parent's card.
-   */
   const noteCountsDeep = computed<Record<string, number>>(() => {
     const counts: Record<string, number> = {}
     for (const note of notes.value) {

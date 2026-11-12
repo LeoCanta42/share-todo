@@ -1,6 +1,8 @@
 import type { Database } from '~/types/database.types'
 import type { TodoPermission, TodoShare } from '~/types/todo'
 import { useGroups } from '~/composables/useGroups'
+import { offlineStorage } from '~/utils/offlineStorage'
+import { isNetworkError } from '~/utils/network'
 
 /**
  * The only fields the grant lookup needs. Both a todo and a note satisfy it, which
@@ -15,19 +17,33 @@ export interface ShareableItem {
 }
 
 export function useShares() {
-  const supabase = useSupabaseClient<Database>()
+  const supabase = useNuxtApp().$supabase?.client as ReturnType<typeof useSupabaseClient<Database>> | undefined
+    ?? useSupabaseClient<Database>()
   const { userId, userEmail } = useCurrentUser()
   const { groupsById, namePath } = useGroups()
   const toast = useToast()
 
-  const myShares = useState<TodoShare[]>('todo-my-shares', () => [])
-  const receivedShares = useState<TodoShare[]>('todo-received-shares', () => [])
+  const initialShares = import.meta.client && !offlineStorage.isLoggedOut()
+    ? offlineStorage.getShares()
+    : { myShares: [], receivedShares: [] }
+
+  const myShares = useState<TodoShare[]>('todo-my-shares', () => initialShares.myShares)
+  const receivedShares = useState<TodoShare[]>('todo-received-shares', () => initialShares.receivedShares)
   const loading = useState<boolean>('todo-shares-loading', () => false)
   const isSharing = useState<boolean>('todo-is-sharing', () => false)
 
   async function loadShares() {
     const id = userId.value
     if (!id) return
+
+    if (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine) {
+      const cached = offlineStorage.getShares()
+      if (cached.myShares.length || cached.receivedShares.length) {
+        myShares.value = cached.myShares
+        receivedShares.value = cached.receivedShares
+      }
+      return
+    }
 
     loading.value = true
     try {
@@ -55,18 +71,36 @@ export function useShares() {
       ])
 
       if (mine.error) {
-        console.error('Error loading my shares:', mine.error)
+        if (!isNetworkError(mine.error)) {
+          console.error('Error loading my shares:', mine.error)
+        }
       } else {
         myShares.value = mine.data ?? []
       }
 
       if (received.error) {
-        console.error('Error loading received shares:', received.error)
+        if (!isNetworkError(received.error)) {
+          console.error('Error loading received shares:', received.error)
+        }
       } else {
         receivedShares.value = received.data ?? []
       }
+
+      if (!mine.error && !received.error) {
+        offlineStorage.setShares({
+          myShares: myShares.value,
+          receivedShares: receivedShares.value
+        })
+      }
     } catch (err: unknown) {
-      console.error('Unexpected error loading shares:', err)
+      if (!isNetworkError(err)) {
+        console.error('Unexpected error loading shares:', err)
+      }
+      const cached = offlineStorage.getShares()
+      if (cached.myShares.length || cached.receivedShares.length) {
+        myShares.value = cached.myShares
+        receivedShares.value = cached.receivedShares
+      }
     } finally {
       loading.value = false
     }

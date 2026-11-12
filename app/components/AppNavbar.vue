@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useAppearance } from '~/composables/useAppearance'
 import { usePwa } from '~/composables/usePwa'
+import { useOfflineSync } from '~/composables/useOfflineSync'
 
 const props = defineProps<{
   user?: { email?: string } | null
@@ -15,6 +16,7 @@ const emit = defineEmits<{
 
 const { setTheme, isDark } = useAppearance()
 const { canInstall, isInstalled, needRefresh, install, updateApp } = usePwa()
+const { isOnline } = useOfflineSync()
 
 const route = useRoute()
 
@@ -60,19 +62,31 @@ const collaborators = computed(() => props.collaboratorsCount ?? 0)
   <header class="sticky top-0 z-30 w-full border-b border-slate-200/80 bg-white pt-safe dark:border-slate-800/80 dark:bg-slate-950">
     <div class="mx-auto flex h-16 max-w-3xl items-center justify-between gap-2 px-4 sm:px-6">
       <!-- Brand -->
-      <NuxtLink to="/" class="flex min-w-0 items-center gap-2.5" aria-label="ShareToDo — vai alla panoramica">
-        <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl gradient-accent text-white shadow-md shadow-accent-600/25">
-          <UIcon name="i-lucide-check" class="h-5 w-5" />
-        </div>
-        <div class="min-w-0">
-          <h1 class="truncate text-base leading-none font-bold text-slate-900 sm:text-lg dark:text-white">
-            ShareToDo
-          </h1>
-          <p class="mt-0.5 hidden text-xs text-slate-500 sm:block dark:text-slate-400">
-            Attività e condivisione
-          </p>
-        </div>
-      </NuxtLink>
+      <div class="flex items-center gap-2">
+        <NuxtLink to="/" class="flex min-w-0 items-center gap-2.5" aria-label="ShareToDo — vai alla panoramica">
+          <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl gradient-accent text-white shadow-md shadow-accent-600/25">
+            <UIcon name="i-lucide-check" class="h-5 w-5" />
+          </div>
+          <div class="min-w-0">
+            <h1 class="truncate text-base leading-none font-bold text-slate-900 sm:text-lg dark:text-white">
+              ShareToDo
+            </h1>
+            <p class="mt-0.5 hidden text-xs text-slate-500 sm:block dark:text-slate-400">
+              Attività e condivisione
+            </p>
+          </div>
+        </NuxtLink>
+
+        <!-- Offline Pill Badge -->
+        <span
+          v-if="!isOnline"
+          class="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800 dark:bg-amber-950/80 dark:text-amber-300"
+          title="Sei offline: i dati sono salvati in locale"
+        >
+          <UIcon name="i-lucide-wifi-off" class="h-3.5 w-3.5" />
+          <span class="hidden sm:inline">Offline</span>
+        </span>
+      </div>
 
       <div class="flex items-center gap-1 sm:gap-2">
         <!-- Section navigation (desktop / tablet) -->

@@ -3,6 +3,9 @@ import type { Todo, TodoFilter, TodoScope, TodoStats, TodoWithGroup, GroupCounts
 import { usePreferences, type SortOrder } from '~/composables/usePreferences'
 import { useGroups } from '~/composables/useGroups'
 import { dueBucket } from '~/utils/date'
+import { offlineStorage } from '~/utils/offlineStorage'
+import { useOfflineSync } from '~/composables/useOfflineSync'
+import { isNetworkError } from '~/utils/network'
 
 export interface TodoSection {
   /** Group id, or '' for the implicit bucket a row without a group falls into. */
@@ -22,25 +25,25 @@ function emptyStats(): TodoStats {
  * Activities.
  *
  * An activity lives in a group *row* (`group_id`), not in a name: that is what makes
- * sub-groups possible. Everything the list needs — which group a task belongs to,
- * what it is called, whether it is inside the selected group's sub-tree, and what the
- * current user may do with it — is derived from the group's `path`, which the database
- * keeps as the ancestor chain including the group itself.
+ * sub-groups possible. Everything the list needs is derived from the group's `path`.
  *
- * The `group_name` column still travels with each row: it is a display mirror the
- * database maintains, so a row whose group has become unreadable (a revoked grant)
- * still shows a label instead of a blank.
- *
- * Group *management* (create, rename, move, delete, colours) lives in `useGroups`.
+ * Fully supports offline mode: local caching, offline creation/edits/deletions,
+ * and automatic synchronization with Supabase when online.
  */
 export function useTodos() {
-  const supabase = useSupabaseClient<Database>()
+  const supabase = useNuxtApp().$supabase?.client as ReturnType<typeof useSupabaseClient<Database>> | undefined
+    ?? useSupabaseClient<Database>()
   const { userId } = useCurrentUser()
   const { prefs } = usePreferences()
   const { groupsById, namePath } = useGroups()
+  const { enqueueMutation, removeMutationsForTempId } = useOfflineSync()
   const toast = useToast()
 
-  const todos = useState<TodoWithGroup[]>('todos-list', () => [])
+  const initialTodos = import.meta.client && !offlineStorage.isLoggedOut()
+    ? offlineStorage.getTodos()
+    : []
+
+  const todos = useState<TodoWithGroup[]>('todos-list', () => initialTodos)
   const loading = useState<boolean>('todos-loading', () => false)
   const isAdding = useState<boolean>('todos-is-adding', () => false)
   const activeActionId = useState<number | null>('todos-active-id', () => null)
@@ -51,11 +54,25 @@ export function useTodos() {
   const selectedGroupId = useState<string>('todos-selected-group-id', () => 'all')
   const searchQuery = useState<string>('todos-search', () => '')
 
+  // Hydrate client-side if needed
+  if (import.meta.client && !offlineStorage.isLoggedOut() && todos.value.length === 0) {
+    const cached = offlineStorage.getTodos()
+    if (cached.length > 0) {
+      todos.value = cached
+    }
+  }
+
   async function loadTodos() {
+    if (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine) {
+      const cached = offlineStorage.getTodos()
+      if (cached.length > 0) {
+        todos.value = cached
+      }
+      return
+    }
+
     loading.value = true
     try {
-      // The embedded group carries name, tone and `path`; the generated types do not
-      // know the relationship yet, so the result is narrowed here.
       const { data, error } = await supabase
         .from('todos')
         .select(`*, group:groups(${GROUP_COLUMNS})`)
@@ -65,18 +82,34 @@ export function useTodos() {
         }
 
       if (error) {
-        console.error('Error fetching todos:', error)
-        toast.add({
-          title: 'Errore nel caricamento',
-          description: error.message || 'Impossibile caricare i task',
-          color: 'error'
-        })
+        if (!isNetworkError(error)) {
+          console.error('Error fetching todos:', error)
+          toast.add({
+            title: 'Errore nel caricamento',
+            description: error.message || 'Impossibile caricare i task',
+            color: 'error'
+          })
+        }
+        const cached = offlineStorage.getTodos()
+        if (cached.length > 0) {
+          todos.value = cached
+        }
         return
       }
 
-      todos.value = data ?? []
+      // Preserve any local temp todos not yet synced
+      const tempTodos = todos.value.filter(t => t.id < 0)
+      const serverTodos = data ?? []
+      todos.value = [...tempTodos, ...serverTodos.filter(st => !tempTodos.some(tt => tt.id === st.id))]
+      offlineStorage.setTodos(todos.value)
     } catch (err: unknown) {
-      console.error('Unexpected error loading todos:', err)
+      if (!isNetworkError(err)) {
+        console.error('Unexpected error loading todos:', err)
+      }
+      const cached = offlineStorage.getTodos()
+      if (cached.length > 0) {
+        todos.value = cached
+      }
     } finally {
       loading.value = false
     }
@@ -92,11 +125,6 @@ export function useTodos() {
     }
   }
 
-  /**
-   * Postgres filters out rows a policy forbids instead of raising an error, so an
-   * update/delete that touched nothing is exactly what a read-only share looks like.
-   * Every write below asks for the affected rows back and treats "none" as a refusal.
-   */
   function notPermitted(action: string) {
     toast.add({
       title: 'Modifica non consentita',
@@ -110,6 +138,73 @@ export function useTodos() {
     return (todo.group?.name || todo.group_name || 'Generale').trim() || 'Generale'
   }
 
+  function addOfflineTodo(
+    title: string,
+    groupId?: string | null,
+    dueOptions?: TodoDueOptions
+  ): boolean {
+    const tempId = -Date.now()
+    const targetGroup = groupId ? groupsById.value.get(groupId) : null
+
+    const payload: Database['public']['Tables']['todos']['Insert'] = {
+      title,
+      group_id: groupId ?? null,
+      completed: false,
+      due_at: dueOptions?.dueAt ?? null,
+      due_all_day: dueOptions?.dueAllDay ?? false,
+      reminder_minutes: dueOptions?.reminderMinutes ?? null,
+      reminder_at: dueOptions?.reminderAt ?? null,
+      timezone: dueOptions?.timezone ?? (typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : 'UTC')
+    }
+
+    if (userId.value) {
+      payload.user_id = userId.value
+    }
+
+    const tempTodo: TodoWithGroup = {
+      id: tempId,
+      title,
+      group_id: groupId ?? null,
+      group_name: targetGroup ? targetGroup.name : 'Generale',
+      group: targetGroup ? {
+        id: targetGroup.id,
+        name: targetGroup.name,
+        parent_id: targetGroup.parent_id,
+        path: targetGroup.path,
+        depth: targetGroup.depth,
+        tone: targetGroup.tone,
+        icon: targetGroup.icon
+      } : null,
+      completed: false,
+      due_at: payload.due_at ?? null,
+      due_all_day: payload.due_all_day ?? false,
+      reminder_minutes: payload.reminder_minutes ?? null,
+      reminder_at: payload.reminder_at ?? null,
+      reminder_sent_at: null,
+      timezone: payload.timezone ?? 'UTC',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      user_id: userId.value
+    }
+
+    todos.value = [tempTodo, ...todos.value.filter(todo => todo.id !== tempId)]
+    offlineStorage.setTodos(todos.value)
+
+    enqueueMutation({
+      type: 'todo:insert',
+      tempId,
+      payload
+    })
+
+    toast.add({
+      title: 'Attività creata (offline)',
+      description: `"${title}" salvata localmente. Verrà sincronizzata online.`,
+      color: 'info'
+    })
+
+    return true
+  }
+
   async function addTodo(
     rawTitle: string,
     groupId?: string | null,
@@ -117,6 +212,10 @@ export function useTodos() {
   ): Promise<boolean> {
     const title = rawTitle.trim()
     if (!title) return false
+
+    if (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine) {
+      return addOfflineTodo(title, groupId, dueOptions)
+    }
 
     isAdding.value = true
     try {
@@ -141,7 +240,7 @@ export function useTodos() {
         .select(`*, group:groups(${GROUP_COLUMNS})`)
         .single() as unknown as {
           data: TodoWithGroup | null
-          error: { message: string, code?: string } | null
+          error: { message: string; code?: string } | null
         }
 
       if (insertResult.error && (insertResult.error.message.includes('reminder_at') || insertResult.error.code === 'PGRST204')) {
@@ -156,13 +255,16 @@ export function useTodos() {
           .select(`*, group:groups(${GROUP_COLUMNS})`)
           .single() as unknown as {
             data: TodoWithGroup | null
-            error: { message: string, code?: string } | null
+            error: { message: string; code?: string } | null
           }
       }
 
       const { data, error } = insertResult
 
       if (error) {
+        if (isNetworkError(error)) {
+          return addOfflineTodo(title, groupId, dueOptions)
+        }
         toast.add({
           title: 'Errore inserimento',
           description: error.message,
@@ -173,6 +275,7 @@ export function useTodos() {
 
       if (data) {
         todos.value = [data, ...todos.value.filter(todo => todo.id !== data.id)]
+        offlineStorage.setTodos(todos.value)
       } else {
         await loadTodos()
       }
@@ -184,6 +287,9 @@ export function useTodos() {
       })
       return true
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        return addOfflineTodo(title, groupId, dueOptions)
+      }
       console.error('Error adding todo:', err)
       return false
     } finally {
@@ -197,6 +303,16 @@ export function useTodos() {
 
     // Optimistic local update
     patch(todo.id, { completed: nextCompleted })
+    offlineStorage.setTodos(todos.value)
+
+    if (todo.id < 0 || (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine)) {
+      enqueueMutation({
+        type: 'todo:update',
+        targetId: todo.id,
+        payload: { completed: nextCompleted }
+      })
+      return
+    }
 
     activeActionId.value = todo.id
     try {
@@ -207,7 +323,16 @@ export function useTodos() {
         .select('id')
 
       if (error) {
+        if (isNetworkError(error)) {
+          enqueueMutation({
+            type: 'todo:update',
+            targetId: todo.id,
+            payload: { completed: nextCompleted }
+          })
+          return
+        }
         restore(todo.id, snapshot)
+        offlineStorage.setTodos(todos.value)
         toast.add({
           title: 'Errore aggiornamento',
           description: error.message,
@@ -215,11 +340,21 @@ export function useTodos() {
         })
       } else if (!data || data.length === 0) {
         restore(todo.id, snapshot)
+        offlineStorage.setTodos(todos.value)
         notPermitted('Spunta non salvata')
       }
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        enqueueMutation({
+          type: 'todo:update',
+          targetId: todo.id,
+          payload: { completed: nextCompleted }
+        })
+        return
+      }
       console.error('Error toggling todo:', err)
       restore(todo.id, snapshot)
+      offlineStorage.setTodos(todos.value)
     } finally {
       activeActionId.value = null
     }
@@ -244,16 +379,56 @@ export function useTodos() {
       }
       return todo
     })
+    offlineStorage.setTodos(todos.value)
+
+    if (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine) {
+      for (const id of ids) {
+        enqueueMutation({
+          type: 'todo:update',
+          targetId: id,
+          payload: { completed: nextCompleted }
+        })
+      }
+      toast.add({
+        title: nextCompleted ? 'Tutte completate (offline)' : 'Tutte da fare (offline)',
+        color: 'info'
+      })
+      return
+    }
 
     try {
+      const realIds = ids.filter(id => id > 0)
+      const tempIds = ids.filter(id => id < 0)
+
+      for (const tempId of tempIds) {
+        enqueueMutation({
+          type: 'todo:update',
+          targetId: tempId,
+          payload: { completed: nextCompleted }
+        })
+      }
+
+      if (realIds.length === 0) return
+
       const { data, error } = await supabase
         .from('todos')
         .update({ completed: nextCompleted })
-        .in('id', ids)
+        .in('id', realIds)
         .select('id')
 
       if (error) {
+        if (isNetworkError(error)) {
+          for (const id of realIds) {
+            enqueueMutation({
+              type: 'todo:update',
+              targetId: id,
+              payload: { completed: nextCompleted }
+            })
+          }
+          return
+        }
         todos.value = todos.value.map(todo => snapshots.get(todo.id) ?? todo)
+        offlineStorage.setTodos(todos.value)
         toast.add({
           title: 'Errore aggiornamento',
           description: error.message,
@@ -263,14 +438,15 @@ export function useTodos() {
       }
 
       const updatedIds = new Set((data ?? []).map(row => row.id))
-      if (updatedIds.size < ids.length) {
+      if (updatedIds.size < realIds.length) {
         // Restore items that were not updated due to permissions
         todos.value = todos.value.map(todo => {
-          if (snapshots.has(todo.id) && !updatedIds.has(todo.id)) {
+          if (snapshots.has(todo.id) && !updatedIds.has(todo.id) && todo.id > 0) {
             return snapshots.get(todo.id)!
           }
           return todo
         })
+        offlineStorage.setTodos(todos.value)
 
         if (updatedIds.size === 0) {
           notPermitted('Spunta non salvata')
@@ -279,19 +455,30 @@ export function useTodos() {
 
         toast.add({
           title: 'Aggiornamento parziale',
-          description: `${updatedIds.size} di ${ids.length} attività aggiornate: le altre sono in sola lettura.`,
+          description: `${updatedIds.size} di ${realIds.length} attività aggiornate: le altre sono in sola lettura.`,
           color: 'warning'
         })
       } else {
         toast.add({
           title: nextCompleted ? 'Tutte completate' : 'Tutte da fare',
-          description: `${updatedIds.size} ${updatedIds.size === 1 ? 'attività' : 'attività'} ${nextCompleted ? 'segnata come completata' : 'riportata da fare'}.`,
+          description: `${ids.length} ${ids.length === 1 ? 'attività' : 'attività'} ${nextCompleted ? 'segnata come completata' : 'riportata da fare'}.`,
           color: 'success'
         })
       }
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        for (const id of ids) {
+          enqueueMutation({
+            type: 'todo:update',
+            targetId: id,
+            payload: { completed: nextCompleted }
+          })
+        }
+        return
+      }
       console.error('Error toggling todos:', err)
       todos.value = todos.value.map(todo => snapshots.get(todo.id) ?? todo)
+      offlineStorage.setTodos(todos.value)
     }
   }
 
@@ -303,6 +490,20 @@ export function useTodos() {
     if (!snapshot || snapshot.title === trimmed) return
 
     patch(id, { title: trimmed })
+    offlineStorage.setTodos(todos.value)
+
+    if (id < 0 || (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine)) {
+      enqueueMutation({
+        type: 'todo:update',
+        targetId: id,
+        payload: { title: trimmed }
+      })
+      toast.add({
+        title: 'Attività modificata (offline)',
+        color: 'info'
+      })
+      return
+    }
 
     activeActionId.value = id
     try {
@@ -313,7 +514,20 @@ export function useTodos() {
         .select('id')
 
       if (error) {
+        if (isNetworkError(error)) {
+          enqueueMutation({
+            type: 'todo:update',
+            targetId: id,
+            payload: { title: trimmed }
+          })
+          toast.add({
+            title: 'Attività modificata (offline)',
+            color: 'info'
+          })
+          return
+        }
         restore(id, snapshot)
+        offlineStorage.setTodos(todos.value)
         toast.add({
           title: 'Errore modifica',
           description: error.message,
@@ -321,6 +535,7 @@ export function useTodos() {
         })
       } else if (!data || data.length === 0) {
         restore(id, snapshot)
+        offlineStorage.setTodos(todos.value)
         notPermitted('Titolo non salvato')
       } else {
         toast.add({
@@ -329,8 +544,21 @@ export function useTodos() {
         })
       }
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        enqueueMutation({
+          type: 'todo:update',
+          targetId: id,
+          payload: { title: trimmed }
+        })
+        toast.add({
+          title: 'Attività modificata (offline)',
+          color: 'info'
+        })
+        return
+      }
       console.error('Error updating title:', err)
       restore(id, snapshot)
+      offlineStorage.setTodos(todos.value)
     } finally {
       activeActionId.value = null
     }
@@ -340,7 +568,37 @@ export function useTodos() {
     const snapshot = todos.value.find(todo => todo.id === id)
     if (!snapshot || (snapshot.group_id ?? null) === (groupId ?? null)) return
 
-    patch(id, { group_id: groupId })
+    const targetGroup = groupId ? groupsById.value.get(groupId) : null
+    const changes: Partial<TodoWithGroup> = {
+      group_id: groupId,
+      group_name: targetGroup ? targetGroup.name : 'Generale',
+      group: targetGroup ? {
+        id: targetGroup.id,
+        name: targetGroup.name,
+        parent_id: targetGroup.parent_id,
+        path: targetGroup.path,
+        depth: targetGroup.depth,
+        tone: targetGroup.tone,
+        icon: targetGroup.icon
+      } : null
+    }
+
+    patch(id, changes)
+    offlineStorage.setTodos(todos.value)
+
+    if (id < 0 || (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine)) {
+      enqueueMutation({
+        type: 'todo:update',
+        targetId: id,
+        payload: { group_id: groupId }
+      })
+      toast.add({
+        title: 'Gruppo aggiornato (offline)',
+        description: `Spostato in "${targetGroup ? targetGroup.name : 'Generale'}"`,
+        color: 'info'
+      })
+      return
+    }
 
     activeActionId.value = id
     try {
@@ -354,7 +612,21 @@ export function useTodos() {
         }
 
       if (error) {
+        if (isNetworkError(error)) {
+          enqueueMutation({
+            type: 'todo:update',
+            targetId: id,
+            payload: { group_id: groupId }
+          })
+          toast.add({
+            title: 'Gruppo aggiornato (offline)',
+            description: `Spostato in "${targetGroup ? targetGroup.name : 'Generale'}"`,
+            color: 'info'
+          })
+          return
+        }
         restore(id, snapshot)
+        offlineStorage.setTodos(todos.value)
         toast.add({
           title: 'Errore spostamento',
           description: error.message,
@@ -362,10 +634,11 @@ export function useTodos() {
         })
       } else if (!data || data.length === 0) {
         restore(id, snapshot)
+        offlineStorage.setTodos(todos.value)
         notPermitted('Spostamento non salvato')
       } else {
-        // Take the row the database returned: it carries the mirrored group name.
         patch(id, data[0]!)
+        offlineStorage.setTodos(todos.value)
         toast.add({
           title: 'Gruppo aggiornato',
           description: `Spostato in "${groupNameOf(data[0]!)}"`,
@@ -373,8 +646,17 @@ export function useTodos() {
         })
       }
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        enqueueMutation({
+          type: 'todo:update',
+          targetId: id,
+          payload: { group_id: groupId }
+        })
+        return
+      }
       console.error('Error updating group:', err)
       restore(id, snapshot)
+      offlineStorage.setTodos(todos.value)
     } finally {
       activeActionId.value = null
     }
@@ -394,6 +676,21 @@ export function useTodos() {
     }
 
     patch(id, changes)
+    offlineStorage.setTodos(todos.value)
+
+    if (id < 0 || (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine)) {
+      enqueueMutation({
+        type: 'todo:update',
+        targetId: id,
+        payload: changes
+      })
+      toast.add({
+        title: 'Promemoria salvato (offline)',
+        color: 'info'
+      })
+      return true
+    }
+
     activeActionId.value = id
 
     try {
@@ -410,6 +707,7 @@ export function useTodos() {
           changes.reminder_minutes = 0
         }
         patch(id, changes)
+        offlineStorage.setTodos(todos.value)
         const retry = await supabase
           .from('todos')
           .update(changes)
@@ -420,7 +718,20 @@ export function useTodos() {
       }
 
       if (error) {
+        if (isNetworkError(error)) {
+          enqueueMutation({
+            type: 'todo:update',
+            targetId: id,
+            payload: changes
+          })
+          toast.add({
+            title: 'Promemoria salvato (offline)',
+            color: 'info'
+          })
+          return true
+        }
         restore(id, snapshot)
+        offlineStorage.setTodos(todos.value)
         toast.add({
           title: 'Errore scadenza o promemoria',
           description: error.message,
@@ -429,6 +740,7 @@ export function useTodos() {
         return false
       } else if (!data || data.length === 0) {
         restore(id, snapshot)
+        offlineStorage.setTodos(todos.value)
         notPermitted('Modifiche non salvate')
         return false
       } else {
@@ -439,8 +751,21 @@ export function useTodos() {
         return true
       }
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        enqueueMutation({
+          type: 'todo:update',
+          targetId: id,
+          payload: changes
+        })
+        toast.add({
+          title: 'Promemoria salvato (offline)',
+          color: 'info'
+        })
+        return true
+      }
       console.error('Error updating due date / reminder:', err)
       restore(id, snapshot)
+      offlineStorage.setTodos(todos.value)
       return false
     } finally {
       activeActionId.value = null
@@ -450,6 +775,7 @@ export function useTodos() {
   async function markReminderSent(id: number): Promise<void> {
     const sentAt = new Date().toISOString()
     patch(id, { reminder_sent_at: sentAt })
+    offlineStorage.setTodos(todos.value)
     try {
       await supabase.from('todos').update({ reminder_sent_at: sentAt }).eq('id', id)
     } catch (err: unknown) {
@@ -463,6 +789,32 @@ export function useTodos() {
     activeActionId.value = id
 
     todos.value = todos.value.filter(todo => todo.id !== id)
+    offlineStorage.setTodos(todos.value)
+
+    if (id < 0) {
+      removeMutationsForTempId(id)
+      toast.add({
+        title: 'Attività eliminata',
+        description: target ? `"${target.title}" è stata rimossa` : undefined,
+        color: 'neutral'
+      })
+      activeActionId.value = null
+      return
+    }
+
+    if (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine) {
+      enqueueMutation({
+        type: 'todo:delete',
+        targetId: id
+      })
+      toast.add({
+        title: 'Attività eliminata (offline)',
+        description: target ? `"${target.title}" è stata rimossa` : undefined,
+        color: 'neutral'
+      })
+      activeActionId.value = null
+      return
+    }
 
     try {
       const { data, error } = await supabase
@@ -472,7 +824,20 @@ export function useTodos() {
         .select('id')
 
       if (error) {
+        if (isNetworkError(error)) {
+          enqueueMutation({
+            type: 'todo:delete',
+            targetId: id
+          })
+          toast.add({
+            title: 'Attività eliminata (offline)',
+            description: target ? `"${target.title}" è stata rimossa` : undefined,
+            color: 'neutral'
+          })
+          return
+        }
         todos.value = snapshot
+        offlineStorage.setTodos(todos.value)
         toast.add({
           title: 'Errore eliminazione',
           description: error.message,
@@ -480,6 +845,7 @@ export function useTodos() {
         })
       } else if (!data || data.length === 0) {
         todos.value = snapshot
+        offlineStorage.setTodos(todos.value)
         notPermitted('Eliminazione non eseguita')
       } else {
         toast.add({
@@ -489,7 +855,20 @@ export function useTodos() {
         })
       }
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        enqueueMutation({
+          type: 'todo:delete',
+          targetId: id
+        })
+        toast.add({
+          title: 'Attività eliminata (offline)',
+          description: target ? `"${target.title}" è stata rimossa` : undefined,
+          color: 'neutral'
+        })
+        return
+      }
       todos.value = snapshot
+      offlineStorage.setTodos(todos.value)
       console.error('Error deleting todo:', err)
     } finally {
       activeActionId.value = null
@@ -497,24 +876,69 @@ export function useTodos() {
   }
 
   async function clearCompleted() {
-    // Scoped to the current group on purpose: on a group page "delete completed"
-    // must not reach the completed activities of every other group.
     const completedIds = scopedTodos.value.filter(todo => todo.completed).map(todo => todo.id)
     if (completedIds.length === 0) return
 
     const targetIds = new Set(completedIds)
     const snapshot = [...todos.value]
     todos.value = todos.value.filter(todo => !targetIds.has(todo.id))
+    offlineStorage.setTodos(todos.value)
+
+    const tempIds = completedIds.filter(id => id < 0)
+    const realIds = completedIds.filter(id => id > 0)
+
+    for (const tempId of tempIds) {
+      removeMutationsForTempId(tempId)
+    }
+
+    if (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine) {
+      for (const realId of realIds) {
+        enqueueMutation({
+          type: 'todo:delete',
+          targetId: realId
+        })
+      }
+      toast.add({
+        title: 'Completati eliminati (offline)',
+        description: `${completedIds.length} attività completate rimosse localmente`,
+        color: 'neutral'
+      })
+      return
+    }
+
+    if (realIds.length === 0) {
+      toast.add({
+        title: 'Completati eliminati',
+        description: `${tempIds.length} attività completate rimosse`,
+        color: 'neutral'
+      })
+      return
+    }
 
     try {
       const { data, error } = await supabase
         .from('todos')
         .delete()
-        .in('id', completedIds)
+        .in('id', realIds)
         .select('id')
 
       if (error) {
+        if (isNetworkError(error)) {
+          for (const realId of realIds) {
+            enqueueMutation({
+              type: 'todo:delete',
+              targetId: realId
+            })
+          }
+          toast.add({
+            title: 'Completati eliminati (offline)',
+            description: `${completedIds.length} attività rimosse localmente`,
+            color: 'neutral'
+          })
+          return
+        }
         todos.value = snapshot
+        offlineStorage.setTodos(todos.value)
         toast.add({
           title: 'Errore durante la pulizia',
           description: error.message,
@@ -524,23 +948,32 @@ export function useTodos() {
       }
 
       const removed = data?.length ?? 0
-      if (removed === completedIds.length) {
+      if (removed === realIds.length) {
         toast.add({
           title: 'Completati eliminati',
-          description: `${removed} attività completate rimosse`,
+          description: `${completedIds.length} attività completate rimosse`,
           color: 'neutral'
         })
       } else {
-        // Some were read-only shares: resync rather than trust the optimistic list.
         await loadTodos()
         toast.add({
           title: 'Pulizia parziale',
-          description: `${removed} di ${completedIds.length} rimosse: le altre sono condivise in sola lettura.`,
+          description: `${removed + tempIds.length} di ${completedIds.length} rimosse: le altre sono condivise in sola lettura.`,
           color: 'warning'
         })
       }
     } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        for (const realId of realIds) {
+          enqueueMutation({
+            type: 'todo:delete',
+            targetId: realId
+          })
+        }
+        return
+      }
       todos.value = snapshot
+      offlineStorage.setTodos(todos.value)
       console.error('Error clearing completed:', err)
     }
   }
@@ -579,26 +1012,15 @@ export function useTodos() {
 
   const stats = computed<TodoStats>(() => countStats(todos.value))
 
-  /** True when the activity sits in the selected group or anywhere below it. */
   function inSelectedGroup(todo: TodoWithGroup): boolean {
     if (selectedGroupId.value === 'all') return true
 
     const group = todo.group
     if (!group) return false
 
-    // `path` is {root, …, self}: the selection is in there when the task is the
-    // selected group itself or one of its descendants.
     return group.path.includes(selectedGroupId.value)
   }
 
-  /**
-   * The activities the current page is actually about: everything, or the selected
-   * group *and its sub-groups* (`selectedGroupId` is pushed by `/g/…`).
-   *
-   * The filter tabs, the empty state and "delete completed" all read from here
-   * rather than from the whole list — otherwise a group page would show global
-   * counters, and clearing completed there would delete rows of other groups.
-   */
   const scopedTodos = computed<TodoWithGroup[]>(() => {
     if (selectedGroupId.value === 'all') return todos.value
     return todos.value.filter(inSelectedGroup)
@@ -606,10 +1028,6 @@ export function useTodos() {
 
   const scopedStats = computed<TodoStats>(() => countStats(scopedTodos.value))
 
-  /**
-   * Per-group tallies, by group id: what the group itself holds (`own`) and what its
-   * whole sub-tree holds (`total`). The card of a parent group shows the second.
-   */
   const groupCounts = computed<Record<string, GroupCounts>>(() => {
     const counts: Record<string, GroupCounts> = {}
 
@@ -629,7 +1047,6 @@ export function useTodos() {
       const group = todo.group
       if (!group) continue
       add(ensure(group.id).own, Boolean(todo.completed))
-      // Every ancestor — `path` includes the group itself.
       for (const ancestorId of group.path) {
         add(ensure(ancestorId).total, Boolean(todo.completed))
       }
@@ -644,13 +1061,11 @@ export function useTodos() {
     return Number.isNaN(value) ? 0 : value
   }
 
-  /** Name path of a group — "Lavoro", "Lavoro/Clienti" — for ordering and labels. */
   function namePathOf(groupId: string): string[] {
     const group = groupsById.value.get(groupId)
     return group ? namePath(group.id) : []
   }
 
-  /** Hierarchical comparison: parents before children, siblings by name. */
   function compareGroupPaths(a: string[], b: string[]): number {
     const length = Math.min(a.length, b.length)
     for (let i = 0; i < length; i++) {
@@ -665,20 +1080,16 @@ export function useTodos() {
     switch (order) {
       case 'due-asc': {
         sorted.sort((a, b) => {
-          // Completed items go to the end if not filtering
           if (Boolean(a.completed) !== Boolean(b.completed)) {
             return Number(Boolean(a.completed)) - Number(Boolean(b.completed))
           }
-          // Both have due_at: earliest first
           if (a.due_at && b.due_at) {
             const diff = Date.parse(a.due_at) - Date.parse(b.due_at)
             if (diff !== 0) return diff
             return timestampOf(b) - timestampOf(a)
           }
-          // Items with due date come first
           if (a.due_at && !b.due_at) return -1
           if (!a.due_at && b.due_at) return 1
-          // Neither has due date: newest first
           return timestampOf(b) - timestampOf(a)
         })
         break
@@ -695,9 +1106,6 @@ export function useTodos() {
           || timestampOf(b) - timestampOf(a))
         break
       case 'group': {
-        // The name path is resolved once per group instead of once per comparison,
-        // and compared segment by segment: a flat string comparison would put
-        // "Lavoro2" among the children of "Lavoro".
         const paths = new Map<string, string[]>()
         const pathOf = (groupId: string | null): string[] => {
           const key = groupId ?? ''
@@ -723,7 +1131,6 @@ export function useTodos() {
   const filteredTodos = computed(() => {
     let result = todos.value
 
-    // Scope filter (mine vs shared)
     const me = userId.value
     if (me) {
       if (scope.value === 'mine') {
@@ -733,12 +1140,10 @@ export function useTodos() {
       }
     }
 
-    // Group filter — the selected group and everything below it
     if (selectedGroupId.value !== 'all') {
       result = result.filter(inSelectedGroup)
     }
 
-    // Status filter
     if (filter.value === 'active') {
       result = result.filter(todo => !todo.completed)
     } else if (filter.value === 'completed') {
@@ -746,12 +1151,9 @@ export function useTodos() {
     } else if (filter.value === 'due') {
       result = result.filter(todo => !todo.completed && Boolean(todo.due_at))
     } else if (prefs.value.hideCompleted) {
-      // Only meaningful for the "Tutti" tab: the other tabs already say which
-      // half of the list you asked for.
       result = result.filter(todo => !todo.completed)
     }
 
-    // Search query
     const query = searchQuery.value.trim().toLowerCase()
     if (query) {
       result = result.filter(todo =>
@@ -763,7 +1165,6 @@ export function useTodos() {
     return sortTodos(result, prefs.value.sort)
   })
 
-  /** Activities split per group, used when the sort order is "group". */
   const groupedTodos = computed<TodoSection[]>(() => {
     const buckets = new Map<string, TodoWithGroup[]>()
     for (const todo of filteredTodos.value) {
@@ -776,7 +1177,7 @@ export function useTodos() {
     const sections = Array.from(buckets.entries()).map(([groupId, items]) => ({
       groupId,
       name: groupId
-        ? (groupsById.value.get(groupId)?.name ?? groupNameOf(items[0]!) )
+        ? (groupsById.value.get(groupId)?.name ?? groupNameOf(items[0]!))
         : groupNameOf(items[0]!),
       todos: items
     }))
@@ -789,7 +1190,6 @@ export function useTodos() {
     return sections
   })
 
-  /** The groups that actually hold something, nearest first: for the filter pickers. */
   const groupsWithTasks = computed<string[]>(() => {
     const ids = new Set<string>()
     for (const todo of todos.value) {
@@ -798,7 +1198,6 @@ export function useTodos() {
     return Array.from(ids)
   })
 
-  /** Number of activities per group, id-keyed (what the notes do for notes). */
   const todoCounts = computed<Record<string, number>>(() => {
     const counts: Record<string, number> = {}
     for (const todo of todos.value) {

@@ -1,5 +1,7 @@
 import type { Database } from '~/types/database.types'
 import type { ApprovalStatus, Profile } from '~/types/profile'
+import { offlineStorage } from '~/utils/offlineStorage'
+import { isNetworkError } from '~/utils/network'
 
 /**
  * The signed-in user's own profile: the two flags that decide whether the app is
@@ -8,15 +10,40 @@ import type { ApprovalStatus, Profile } from '~/types/profile'
  * Read-only by design — `public.profiles` has no insert/update policy, so these
  * fields can only be changed by an admin through the SQL functions in
  * `supabase/schema.sql`.
+ *
+ * Persisted locally so that when connection is unavailable, approved users continue
+ * accessing the app seamlessly without being blocked by approval verification.
  */
 export function useProfile() {
-  const supabase = useSupabaseClient<Database>()
+  const supabase = useNuxtApp().$supabase?.client as ReturnType<typeof useSupabaseClient<Database>> | undefined
+    ?? useSupabaseClient<Database>()
   const { userId } = useCurrentUser()
 
-  const profile = useState<Profile | null>('me-profile', () => null)
+  const profile = useState<Profile | null>('me-profile', () => {
+    if (import.meta.client && !offlineStorage.isLoggedOut()) {
+      return offlineStorage.getProfile()
+    }
+    return null
+  })
+
   const loading = useState<boolean>('me-profile-loading', () => false)
-  /** True once a fetch has settled, so callers can tell "pending" from "not asked yet". */
-  const loaded = useState<boolean>('me-profile-loaded', () => false)
+
+  /** True once a fetch has settled or cached profile is ready. */
+  const loaded = useState<boolean>('me-profile-loaded', () => {
+    if (import.meta.client && !offlineStorage.isLoggedOut()) {
+      return Boolean(offlineStorage.getProfile())
+    }
+    return false
+  })
+
+  // Hydrate client-side if needed
+  if (import.meta.client && !offlineStorage.isLoggedOut() && !profile.value) {
+    const cached = offlineStorage.getProfile()
+    if (cached) {
+      profile.value = cached
+      loaded.value = true
+    }
+  }
 
   const isAdmin = computed(() => Boolean(profile.value?.is_admin))
 
@@ -35,9 +62,23 @@ export function useProfile() {
   async function loadProfile() {
     const id = userId.value
     if (!id) {
-      profile.value = null
-      loaded.value = false
+      if (offlineStorage.isLoggedOut()) {
+        profile.value = null
+        loaded.value = false
+      }
       return
+    }
+
+    // If client is offline, check local cache and keep it
+    if (import.meta.client) {
+      const cached = offlineStorage.getProfile()
+      if (cached && (cached.id === id || !cached.id)) {
+        profile.value = cached
+        loaded.value = true
+      }
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        return
+      }
     }
 
     loading.value = true
@@ -49,14 +90,21 @@ export function useProfile() {
         .maybeSingle()
 
       if (error) {
-        console.error('Error loading profile:', error)
-        profile.value = null
+        if (!isNetworkError(error)) {
+          console.error('Error loading profile:', error)
+          profile.value = null
+        }
       } else {
         profile.value = data ?? null
+        if (data) {
+          offlineStorage.setProfile(data)
+        }
       }
       loaded.value = true
     } catch (err: unknown) {
-      console.error('Unexpected error loading profile:', err)
+      if (!isNetworkError(err)) {
+        console.error('Unexpected error loading profile:', err)
+      }
       loaded.value = true
     } finally {
       loading.value = false
@@ -71,6 +119,7 @@ export function useProfile() {
   function resetProfile() {
     profile.value = null
     loaded.value = false
+    offlineStorage.clearProfile()
   }
 
   return {

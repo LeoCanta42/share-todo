@@ -5,6 +5,7 @@ import { useConfirm } from '~/composables/useConfirm'
 import { usePwa } from '~/composables/usePwa'
 import { useAuth } from '~/composables/useAuth'
 import { useNotifications } from '~/composables/useNotifications'
+import { useOfflineSync } from '~/composables/useOfflineSync'
 import { MIN_PASSWORD_LENGTH } from '~/utils/password'
 import { DEFAULT_GROUPS, GROUP_ICONS, GROUP_TONES } from '~/utils/groups'
 import { formatDate } from '~/utils/date'
@@ -43,6 +44,7 @@ const {
 } = useNotifications()
 const { ask } = useConfirm()
 const toast = useToast()
+const { isOnline, isSyncing, pendingCount, processQueue } = useOfflineSync()
 
 async function handleLogout() {
   emit('update:open', false)
@@ -877,6 +879,53 @@ async function handleInstall() {
                     </p>
                   </div>
                 </template>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sincronizzazione e dati offline -->
+        <div class="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
+          <div class="flex items-start gap-3">
+            <span class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-accent-50 text-accent-600 dark:bg-accent-950/50 dark:text-accent-400">
+              <UIcon :name="isOnline ? 'i-lucide-cloud' : 'i-lucide-cloud-off'" class="h-5 w-5" />
+            </span>
+            <div class="min-w-0 flex-1">
+              <h3 class="text-sm font-bold text-slate-900 dark:text-white">Dati offline e sincronizzazione</h3>
+              <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                L'app salva attività, note e gruppi sul dispositivo. Le modifiche apportate offline vengono inviate automaticamente al server non appena torna la connessione.
+              </p>
+
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                <span
+                  class="inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-xs font-semibold"
+                  :class="isOnline ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300' : 'bg-amber-50 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300'"
+                >
+                  <UIcon :name="isOnline ? 'i-lucide-wifi' : 'i-lucide-wifi-off'" class="h-3.5 w-3.5" />
+                  {{ isOnline ? 'Online' : 'Offline' }}
+                </span>
+
+                <span
+                  v-if="pendingCount > 0"
+                  class="inline-flex items-center gap-1.5 rounded-xl bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-950/50 dark:text-blue-300"
+                >
+                  <UIcon name="i-lucide-clock" class="h-3.5 w-3.5" />
+                  {{ pendingCount }} {{ pendingCount === 1 ? 'modifica in attesa' : 'modifiche in attesa' }}
+                </span>
+
+                <UButton
+                  v-if="isOnline && pendingCount > 0"
+                  color="primary"
+                  variant="soft"
+                  size="xs"
+                  icon="i-lucide-refresh-cw"
+                  class="rounded-xl font-medium"
+                  :loading="isSyncing"
+                  :disabled="isSyncing"
+                  @click="processQueue"
+                >
+                  Sincronizza ora
+                </UButton>
               </div>
             </div>
           </div>

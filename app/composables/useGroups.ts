@@ -9,34 +9,51 @@ import {
   groupNamePath,
   resolveGroupPath
 } from '~/utils/groupTree'
+import { offlineStorage } from '~/utils/offlineStorage'
+import { useOfflineSync } from '~/composables/useOfflineSync'
+import { isNetworkError } from '~/utils/network'
 
 /**
  * The group tree.
  *
  * Groups are rows now (see `supabase/schema.sql`, section 1.5), so this is the one
  * place that reads and writes them. What comes back is everything the signed-in user
- * may see: their own tree plus any branch someone shared with them — the policies
- * decide that, not this composable.
+ * may see: their own tree plus any branch someone shared with them.
  *
- * Two things worth knowing about the shape of the data:
- * - `path` is the ancestor chain *including the group itself*, maintained by the
- *   database. Ancestry questions ("is this group inside that one?") are answered from
- *   it, never by walking parents in a loop.
- * - a sub-group whose parent is not visible (a share can hand you a branch without its
- *   ancestors) is treated as a root by the tree builder, so the UI always has
- *   something to render.
+ * Group state is persisted locally so that it remains accessible and editable offline.
  */
 export function useGroups() {
-  const supabase = useSupabaseClient<Database>()
+  const supabase = useNuxtApp().$supabase?.client as ReturnType<typeof useSupabaseClient<Database>> | undefined
+    ?? useSupabaseClient<Database>()
   const toast = useToast()
-  // Captured here, during setup: `migrateLegacyGroupPrefs` is awaited from a watcher,
-  // and a composable called after an `await` has no Nuxt instance to read.
   const { takeLegacyGroupState } = usePreferences()
+  const { userId } = useCurrentUser()
+  const { enqueueMutation, removeMutationsForTempId } = useOfflineSync()
 
-  const groups = useState<Group[]>('groups-list', () => [])
+  const initialGroups = import.meta.client && !offlineStorage.isLoggedOut()
+    ? offlineStorage.getGroups()
+    : []
+
+  const groups = useState<Group[]>('groups-list', () => initialGroups)
   const loading = useState<boolean>('groups-loading', () => false)
 
+  // Hydrate client-side if needed
+  if (import.meta.client && !offlineStorage.isLoggedOut() && groups.value.length === 0) {
+    const cached = offlineStorage.getGroups()
+    if (cached.length > 0) {
+      groups.value = cached
+    }
+  }
+
   async function loadGroups() {
+    if (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine) {
+      const cached = offlineStorage.getGroups()
+      if (cached.length > 0) {
+        groups.value = cached
+      }
+      return
+    }
+
     loading.value = true
     try {
       const { data, error } = await supabase
@@ -46,18 +63,34 @@ export function useGroups() {
         .order('name', { ascending: true })
 
       if (error) {
-        console.error('Error fetching groups:', error)
-        toast.add({
-          title: 'Errore nel caricamento',
-          description: error.message || 'Impossibile caricare i gruppi',
-          color: 'error'
-        })
+        if (!isNetworkError(error)) {
+          console.error('Error fetching groups:', error)
+          toast.add({
+            title: 'Errore nel caricamento',
+            description: error.message || 'Impossibile caricare i gruppi',
+            color: 'error'
+          })
+        }
+        const cached = offlineStorage.getGroups()
+        if (cached.length > 0) {
+          groups.value = cached
+        }
         return
       }
 
-      groups.value = data ?? []
+      // Preserve any local temp groups not yet synced
+      const tempGroups = groups.value.filter(g => g.id.startsWith('temp_'))
+      const serverGroups = data ?? []
+      groups.value = [...serverGroups, ...tempGroups.filter(tg => !serverGroups.some(sg => sg.id === tg.id))]
+      offlineStorage.setGroups(groups.value)
     } catch (err: unknown) {
-      console.error('Unexpected error loading groups:', err)
+      if (!isNetworkError(err)) {
+        console.error('Unexpected error loading groups:', err)
+      }
+      const cached = offlineStorage.getGroups()
+      if (cached.length > 0) {
+        groups.value = cached
+      }
     } finally {
       loading.value = false
     }
@@ -73,7 +106,7 @@ export function useGroups() {
 
   /** Groups the signed-in user owns (a shared branch belongs to someone else). */
   const ownGroups = computed(() => groups.value.filter(group => group.owner_id !== null && isOwn(group)))
-  const { userId } = useCurrentUser()
+
   function isOwn(group: Group): boolean {
     return Boolean(userId.value && group.owner_id === userId.value)
   }
@@ -111,10 +144,56 @@ export function useGroups() {
     return true
   }
 
+  function createOfflineGroup(input: NewGroup, name: string): Group {
+    const tempId = 'temp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
+    const parent = input.parentId ? byId(input.parentId) : null
+    const depth = depthOfChild(input.parentId)
+    const path = parent ? [...parent.path, tempId] : [tempId]
+
+    const data: Group = {
+      id: tempId,
+      name,
+      parent_id: input.parentId ?? null,
+      depth,
+      path,
+      tone: input.tone ?? 'slate',
+      icon: input.icon ?? 'folder',
+      owner_id: userId.value ?? '',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }
+
+    groups.value = [...groups.value, data]
+    offlineStorage.setGroups(groups.value)
+
+    enqueueMutation({
+      type: 'group:insert',
+      tempId,
+      payload: {
+        name,
+        parent_id: input.parentId ?? null,
+        tone: data.tone,
+        icon: data.icon
+      }
+    })
+
+    toast.add({
+      title: 'Gruppo creato (offline)',
+      description: `"${name}" salvato localmente. Verrà sincronizzato online.`,
+      color: 'info'
+    })
+
+    return data
+  }
+
   async function createGroup(input: NewGroup): Promise<Group | null> {
     const name = input.name.trim()
     if (!name) return null
     if (rejectTooDeep(input.parentId)) return null
+
+    if (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine) {
+      return createOfflineGroup(input, name)
+    }
 
     const payload: Database['public']['Tables']['groups']['Insert'] = {
       name,
@@ -123,28 +202,39 @@ export function useGroups() {
     if (input.tone) payload.tone = input.tone
     if (input.icon) payload.icon = input.icon
 
-    const { data, error } = await supabase.from('groups').insert(payload).select().single()
+    try {
+      const { data, error } = await supabase.from('groups').insert(payload).select().single()
 
-    if (error) {
-      // The only expected refusal is a name already used by a sibling.
-      const duplicate = error.code === '23505'
-      toast.add({
-        title: duplicate ? 'Nome già usato' : 'Errore creazione gruppo',
-        description: duplicate
-          ? `Esiste già un gruppo "${name}" allo stesso livello.`
-          : error.message,
-        color: duplicate ? 'warning' : 'error'
-      })
+      if (error) {
+        if (isNetworkError(error)) {
+          return createOfflineGroup(input, name)
+        }
+        const duplicate = error.code === '23505'
+        toast.add({
+          title: duplicate ? 'Nome già usato' : 'Errore creazione gruppo',
+          description: duplicate
+            ? `Esiste già un gruppo "${name}" allo stesso livello.`
+            : error.message,
+          color: duplicate ? 'warning' : 'error'
+        })
+        return null
+      }
+
+      if (data) {
+        groups.value = [...groups.value, data]
+        offlineStorage.setGroups(groups.value)
+      } else {
+        await loadGroups()
+      }
+
+      return data ?? null
+    } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        return createOfflineGroup(input, name)
+      }
+      console.error('Error creating group:', err)
       return null
     }
-
-    if (data) {
-      groups.value = [...groups.value, data]
-    } else {
-      await loadGroups()
-    }
-
-    return data ?? null
   }
 
   async function renameGroup(id: string, rawName: string): Promise<boolean> {
@@ -152,29 +242,67 @@ export function useGroups() {
     const current = byId(id)
     if (!current || !name || name === current.name) return false
 
-    const { data, error } = await supabase
-      .from('groups')
-      .update({ name })
-      .eq('id', id)
-      .select('id')
+    // Optimistic local update
+    groups.value = groups.value.map(group => (group.id === id ? { ...group, name } : group))
+    offlineStorage.setGroups(groups.value)
 
-    if (error || !data || data.length === 0) {
-      toast.add({
-        title: 'Gruppo non rinominato',
-        description: error?.message ?? 'Puoi rinominare solo i tuoi gruppi.',
-        color: 'error'
+    if (id.startsWith('temp_') || (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine)) {
+      enqueueMutation({
+        type: 'group:update',
+        targetId: id,
+        payload: { name }
       })
-      return false
+      toast.add({ title: 'Gruppo rinominato (offline)', color: 'info' })
+      return true
     }
 
-    // The database keeps the name mirrored on every activity, note and grant; here
-    // only the tree changes.
-    groups.value = groups.value.map(group => (group.id === id ? { ...group, name } : group))
-    return true
+    try {
+      const { data, error } = await supabase
+        .from('groups')
+        .update({ name })
+        .eq('id', id)
+        .select('id')
+
+      if (error || !data || data.length === 0) {
+        if (isNetworkError(error)) {
+          enqueueMutation({
+            type: 'group:update',
+            targetId: id,
+            payload: { name }
+          })
+          toast.add({ title: 'Gruppo rinominato (offline)', color: 'info' })
+          return true
+        }
+        // Rollback
+        groups.value = groups.value.map(group => (group.id === id ? current : group))
+        offlineStorage.setGroups(groups.value)
+        toast.add({
+          title: 'Gruppo non rinominato',
+          description: error?.message ?? 'Puoi rinominare solo i tuoi gruppi.',
+          color: 'error'
+        })
+        return false
+      }
+
+      return true
+    } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        enqueueMutation({
+          type: 'group:update',
+          targetId: id,
+          payload: { name }
+        })
+        toast.add({ title: 'Gruppo rinominato (offline)', color: 'info' })
+        return true
+      }
+      groups.value = groups.value.map(group => (group.id === id ? current : group))
+      offlineStorage.setGroups(groups.value)
+      return false
+    }
   }
 
-  /** Colour and icon of a group (moved here from the per-device preferences). */
-  async function setGroupLook(id: string, look: { tone?: string, icon?: string }): Promise<boolean> {
+  /** Colour and icon of a group. */
+  async function setGroupLook(id: string, look: { tone?: string; icon?: string }): Promise<boolean> {
     const current = byId(id)
     if (!current) return false
 
@@ -184,84 +312,190 @@ export function useGroups() {
     }
 
     groups.value = groups.value.map(group => (group.id === id ? { ...group, ...payload } : group))
+    offlineStorage.setGroups(groups.value)
 
-    const { data, error } = await supabase.from('groups').update(payload).eq('id', id).select('id')
-
-    if (error || !data || data.length === 0) {
-      groups.value = groups.value.map(group => (group.id === id ? current : group))
-      toast.add({
-        title: 'Aspetto non salvato',
-        description: error?.message ?? 'Puoi modificare solo i tuoi gruppi.',
-        color: 'error'
+    if (id.startsWith('temp_') || (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine)) {
+      enqueueMutation({
+        type: 'group:update',
+        targetId: id,
+        payload
       })
-      return false
+      return true
     }
 
-    return true
+    try {
+      const { data, error } = await supabase.from('groups').update(payload).eq('id', id).select('id')
+
+      if (error || !data || data.length === 0) {
+        if (isNetworkError(error)) {
+          enqueueMutation({
+            type: 'group:update',
+            targetId: id,
+            payload
+          })
+          return true
+        }
+        groups.value = groups.value.map(group => (group.id === id ? current : group))
+        offlineStorage.setGroups(groups.value)
+        toast.add({
+          title: 'Aspetto non salvato',
+          description: error?.message ?? 'Puoi modificare solo i tuoi gruppi.',
+          color: 'error'
+        })
+        return false
+      }
+
+      return true
+    } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        enqueueMutation({
+          type: 'group:update',
+          targetId: id,
+          payload
+        })
+        return true
+      }
+      groups.value = groups.value.map(group => (group.id === id ? current : group))
+      offlineStorage.setGroups(groups.value)
+      return false
+    }
   }
 
-  /** Move a group (and its sub-tree, which the database carries with it). */
+  /** Move a group (and its sub-tree). */
   async function moveGroup(id: string, parentId: string | null): Promise<boolean> {
     const current = byId(id)
     if (!current || (current.parent_id ?? null) === parentId) return false
     if (rejectTooDeep(parentId)) return false
 
-    const { data, error } = await supabase
-      .from('groups')
-      .update({ parent_id: parentId })
-      .eq('id', id)
-      .select('id')
+    // Optimistically update
+    groups.value = groups.value.map(group => (group.id === id ? { ...group, parent_id: parentId } : group))
+    offlineStorage.setGroups(groups.value)
 
-    if (error || !data || data.length === 0) {
-      const cycle = error?.message?.includes('ancestor') ?? false
-      toast.add({
-        title: 'Gruppo non spostato',
-        description: cycle
-          ? 'Un gruppo non può finire dentro un suo sottogruppo.'
-          : error?.message ?? 'Puoi spostare solo i tuoi gruppi.',
-        color: 'error'
+    if (id.startsWith('temp_') || (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine)) {
+      enqueueMutation({
+        type: 'group:update',
+        targetId: id,
+        payload: { parent_id: parentId }
       })
-      return false
+      toast.add({ title: 'Gruppo spostato (offline)', color: 'info' })
+      return true
     }
 
-    // Paths and depths of the whole sub-tree are recomputed by the database.
-    await loadGroups()
-    return true
+    try {
+      const { data, error } = await supabase
+        .from('groups')
+        .update({ parent_id: parentId })
+        .eq('id', id)
+        .select('id')
+
+      if (error || !data || data.length === 0) {
+        if (isNetworkError(error)) {
+          enqueueMutation({
+            type: 'group:update',
+            targetId: id,
+            payload: { parent_id: parentId }
+          })
+          toast.add({ title: 'Gruppo spostato (offline)', color: 'info' })
+          return true
+        }
+        // Rollback
+        groups.value = groups.value.map(group => (group.id === id ? current : group))
+        offlineStorage.setGroups(groups.value)
+        const cycle = error?.message?.includes('ancestor') ?? false
+        toast.add({
+          title: 'Gruppo non spostato',
+          description: cycle
+            ? 'Un gruppo non può finire dentro un suo sottogruppo.'
+            : error?.message ?? 'Puoi spostare solo i tuoi gruppi.',
+          color: 'error'
+        })
+        return false
+      }
+
+      await loadGroups()
+      return true
+    } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        enqueueMutation({
+          type: 'group:update',
+          targetId: id,
+          payload: { parent_id: parentId }
+        })
+        toast.add({ title: 'Gruppo spostato (offline)', color: 'info' })
+        return true
+      }
+      groups.value = groups.value.map(group => (group.id === id ? current : group))
+      offlineStorage.setGroups(groups.value)
+      return false
+    }
   }
 
   /**
-   * Delete a group. Its sub-groups go with it and the activities inside land back in
-   * "Generale" — both done by the database, so this only has to refresh.
+   * Delete a group.
    */
   async function removeGroup(id: string): Promise<boolean> {
     const current = byId(id)
     if (!current) return false
 
-    const { data, error } = await supabase.from('groups').delete().eq('id', id).select('id')
+    // Optimistic removal
+    groups.value = groups.value.filter(group => group.id !== id && !group.path.includes(id))
+    offlineStorage.setGroups(groups.value)
 
-    if (error || !data || data.length === 0) {
-      toast.add({
-        title: 'Gruppo non eliminato',
-        description: error?.message ?? 'Puoi eliminare solo i tuoi gruppi.',
-        color: 'error'
-      })
-      return false
+    if (id.startsWith('temp_')) {
+      removeMutationsForTempId(id)
+      toast.add({ title: 'Gruppo rimosso', color: 'neutral' })
+      return true
     }
 
-    // The delete cascaded through the sub-tree, so the cache is not a row to splice
-    // out: re-read the tree, or every picker and card keeps listing the group until
-    // the next full load.
-    await loadGroups()
-    return true
+    if (import.meta.client && typeof navigator !== 'undefined' && !navigator.onLine) {
+      enqueueMutation({
+        type: 'group:delete',
+        targetId: id
+      })
+      toast.add({ title: 'Gruppo rimosso (offline)', color: 'neutral' })
+      return true
+    }
+
+    try {
+      const { data, error } = await supabase.from('groups').delete().eq('id', id).select('id')
+
+      if (error || !data || data.length === 0) {
+        if (isNetworkError(error)) {
+          enqueueMutation({
+            type: 'group:delete',
+            targetId: id
+          })
+          toast.add({ title: 'Gruppo rimosso (offline)', color: 'neutral' })
+          return true
+        }
+        // Rollback
+        await loadGroups()
+        toast.add({
+          title: 'Gruppo non eliminato',
+          description: error?.message ?? 'Puoi eliminare solo i tuoi gruppi.',
+          color: 'error'
+        })
+        return false
+      }
+
+      await loadGroups()
+      return true
+    } catch (err: unknown) {
+      if (isNetworkError(err)) {
+        enqueueMutation({
+          type: 'group:delete',
+          targetId: id
+        })
+        toast.add({ title: 'Gruppo rimosso (offline)', color: 'neutral' })
+        return true
+      }
+      await loadGroups()
+      return false
+    }
   }
 
   /**
-   * Bring the groups that used to live in the preferences cookie into the tree.
-   *
-   * Before groups were rows, a user's own groups were a list in a per-device cookie and
-   * their colours were a second list next to it. This runs once (it clears the cookie
-   * keys as it reads them), creates the missing groups and applies the colours that
-   * were saved for them — so nobody loses the groups they had made.
+   * Bring legacy preferences cookie groups into tree.
    */
   async function migrateLegacyGroupPrefs(): Promise<number> {
     const legacy = takeLegacyGroupState()
@@ -279,8 +513,6 @@ export function useGroups() {
       if (group) created++
     }
 
-    // A colour saved for a name that already had a row (a preset, say) is applied to
-    // it — the name is what the cookie knew.
     for (const [name, look] of Object.entries(legacy.styles)) {
       const target = groups.value.find(group =>
         isOwn(group) && group.name.toLowerCase() === name.toLowerCase()

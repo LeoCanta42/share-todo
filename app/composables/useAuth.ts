@@ -1,10 +1,12 @@
 import type { Database } from '~/types/database.types'
+import type { JwtPayload } from '@supabase/supabase-js'
 import { MIN_PASSWORD_LENGTH } from '~/utils/password'
+import { offlineStorage } from '~/utils/offlineStorage'
 
 export function useAuth() {
-  const supabase = useSupabaseClient<Database>()
-  const user = useSupabaseUser()
-  const { userEmail } = useCurrentUser()
+  const supabase = useNuxtApp().$supabase?.client as ReturnType<typeof useSupabaseClient<Database>> | undefined
+    ?? useSupabaseClient<Database>()
+  const { user, userEmail, rawUser } = useCurrentUser()
   const toast = useToast()
 
   const loading = ref(false)
@@ -12,7 +14,7 @@ export function useAuth() {
   async function loginWithEmail(email: string, password: string): Promise<boolean> {
     loading.value = true
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password
       })
@@ -24,6 +26,17 @@ export function useAuth() {
           color: 'error'
         })
         return false
+      }
+
+      offlineStorage.setLoggedOut(false)
+      if (data.user) {
+        const payload: JwtPayload = {
+          sub: data.user.id,
+          email: data.user.email,
+          aud: data.user.aud,
+          role: data.user.role
+        }
+        offlineStorage.setUser(payload)
       }
 
       toast.add({
@@ -57,7 +70,16 @@ export function useAuth() {
         return false
       }
 
-      if (data.session) {
+      if (data.session && data.user) {
+        offlineStorage.setLoggedOut(false)
+        const payload: JwtPayload = {
+          sub: data.user.id,
+          email: data.user.email,
+          aud: data.user.aud,
+          role: data.user.role
+        }
+        offlineStorage.setUser(payload)
+
         toast.add({
           title: 'Account creato!',
           description: 'Accesso effettuato con successo.',
@@ -81,11 +103,6 @@ export function useAuth() {
 
   /**
    * Change the signed-in user's own password.
-   *
-   * `auth.updateUser()` does not ask for the current password, so on its own it
-   * would let anyone with a borrowed session lock the owner out. The current
-   * password is therefore verified first by re-authenticating: same credentials,
-   * and it fails loudly instead of silently rewriting the password.
    */
   async function changePassword(currentPassword: string, newPassword: string): Promise<boolean> {
     const email = userEmail.value
@@ -160,20 +177,21 @@ export function useAuth() {
   async function logout() {
     loading.value = true
     try {
+      offlineStorage.clearAll()
+      rawUser.value = null
+      const offlineUserState = useState<JwtPayload | null>('offline-user-state', () => null)
+      offlineUserState.value = null
+
       const { error } = await supabase.auth.signOut()
       if (error) {
-        toast.add({
-          title: 'Errore durante il logout',
-          description: error.message,
-          color: 'error'
-        })
-      } else {
-        toast.add({
-          title: 'Disconnesso',
-          description: 'A presto!',
-          color: 'neutral'
-        })
+        console.warn('SignOut warning:', error)
       }
+
+      toast.add({
+        title: 'Disconnesso',
+        description: 'A presto!',
+        color: 'neutral'
+      })
     } finally {
       loading.value = false
     }
@@ -188,4 +206,3 @@ export function useAuth() {
     logout
   }
 }
-
