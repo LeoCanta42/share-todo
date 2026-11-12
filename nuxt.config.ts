@@ -2,6 +2,12 @@
 export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
 
+  nitro: {
+    prerender: {
+      routes: ['/', '/notes']
+    }
+  },
+
   devtools: {
     enabled: true
   },
@@ -152,7 +158,7 @@ export default defineNuxtConfig({
     },
     workbox: {
       importScripts: ['/push-handler.js'],
-      globPatterns: ['**/*.{js,css,ico,png,svg,woff2}'],
+      globPatterns: ['**/*.{js,css,ico,png,svg,woff2,html,json}'],
       /**
        * Both folders below match the pattern above but must not be precached:
        * - `/screenshots` are install-sheet artwork for the Android prompt (~680 KB),
