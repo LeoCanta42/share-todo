@@ -14,6 +14,8 @@ export function isNetworkError(error: unknown): boolean {
     errStr.includes('fetch failed') ||
     errStr.includes('abort') ||
     errStr.includes('connection refused') ||
+    errStr.includes('timeout') ||
+    errStr.includes('timed out') ||
     errStr.includes('offline')
   )
 }
